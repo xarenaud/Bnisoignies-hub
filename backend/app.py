@@ -28,7 +28,17 @@ class UserAccount(db.Model):
     invitation_token=db.Column(db.String(128),unique=True,index=True)
     invitation_expires_at=db.Column(db.DateTime)
     activated_at=db.Column(db.DateTime)
+    is_system_admin=db.Column(db.Boolean,nullable=False,default=False)
     member=db.relationship("Member",backref=db.backref("user_account",uselist=False))
+
+class AuthSession(db.Model):
+    __tablename__="auth_sessions"
+    id=db.Column(db.Integer,primary_key=True)
+    account_id=db.Column(db.Integer,db.ForeignKey("user_accounts.id"),nullable=False,index=True)
+    token_hash=db.Column(db.String(64),nullable=False,unique=True,index=True)
+    expires_at=db.Column(db.DateTime,nullable=False)
+    created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
+    account=db.relationship("UserAccount")
 
 class Membership(db.Model):
     __tablename__="memberships"
@@ -155,6 +165,31 @@ def create_app():
         db.session.commit()
         return {"status":"ACTIVE","message":"Compte activé."}
 
+    def account_payload(account):
+        today=date.today()
+        active_mandates=Mandate.query.filter(Mandate.start_date<=today,Mandate.end_date>=today).all()
+        mandate_ids=[m.id for m in active_mandates]
+        roles=[]
+        if mandate_ids:
+            assignments=RoleAssignment.query.filter(RoleAssignment.member_id==account.member_id,RoleAssignment.mandate_id.in_(mandate_ids),RoleAssignment.status=="ACTIVE").all()
+            role_ids=[a.role_id for a in assignments]
+            if role_ids: roles=[r.name for r in Role.query.filter(Role.id.in_(role_ids)).all()]
+        admin=bool(account.is_system_admin or any(r.lower() in {"président","president","vice-président","vice-president","secrétaire-trésorier","secretaire-tresorier"} for r in roles))
+        return {"id":account.member.id,"firstName":account.member.first_name,"lastName":account.member.last_name,"email":account.email,"roles":roles,"isAdmin":admin}
+
+    def bearer_account():
+        header=request.headers.get("Authorization","")
+        if not header.startswith("Bearer "): return None,None
+        raw=header[7:].strip()
+        import hashlib
+        hashed=hashlib.sha256(raw.encode()).hexdigest()
+        session=AuthSession.query.filter_by(token_hash=hashed).first()
+        if not session or session.expires_at<datetime.utcnow():
+            if session:
+                db.session.delete(session);db.session.commit()
+            return None,None
+        return session.account,session
+
     @app.post("/api/auth/login")
     def login():
         data=request.get_json(silent=True) or {}
@@ -162,7 +197,24 @@ def create_app():
         account=UserAccount.query.filter(db.func.lower(UserAccount.email)==email).first()
         if not account or account.status!="ACTIVE" or not account.password_hash or not check_password_hash(account.password_hash,data.get("password") or ""):
             return {"error":"Identifiants incorrects."},401
-        return {"status":"ok","member":{"id":account.member.id,"firstName":account.member.first_name,"lastName":account.member.last_name}}
+        raw=secrets.token_urlsafe(48)
+        import hashlib
+        session=AuthSession(account_id=account.id,token_hash=hashlib.sha256(raw.encode()).hexdigest(),expires_at=datetime.utcnow()+timedelta(days=7))
+        db.session.add(session);db.session.commit()
+        return {"token":raw,"expiresInDays":7,"member":account_payload(account)}
+
+    @app.get("/api/auth/me")
+    def me():
+        account,_=bearer_account()
+        if not account:return {"error":"Session invalide ou expirée."},401
+        return {"member":account_payload(account)}
+
+    @app.post("/api/auth/logout")
+    def logout():
+        _,session=bearer_account()
+        if session:
+            db.session.delete(session);db.session.commit()
+        return {"status":"ok"}
 
     @app.get("/api/meetings")
     def meetings():
