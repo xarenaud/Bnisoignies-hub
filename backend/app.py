@@ -1,11 +1,11 @@
 import os, secrets, io
 from datetime import datetime, date, timedelta
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import text
 from werkzeug.security import generate_password_hash, check_password_hash
-from openpyxl import load_workbook
+from openpyxl import load_workbook, Workbook
 
 db=SQLAlchemy()
 
@@ -71,6 +71,17 @@ class RoleAssignment(db.Model):
     role_id=db.Column(db.Integer,db.ForeignKey("roles.id"),nullable=False)
     member_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False)
     status=db.Column(db.String(30),nullable=False,default="ACTIVE")
+
+class ImportLog(db.Model):
+    __tablename__="import_logs"
+    id=db.Column(db.Integer,primary_key=True)
+    account_id=db.Column(db.Integer,db.ForeignKey("user_accounts.id"),nullable=False,index=True)
+    filename=db.Column(db.String(255))
+    created_count=db.Column(db.Integer,nullable=False,default=0)
+    updated_count=db.Column(db.Integer,nullable=False,default=0)
+    error_count=db.Column(db.Integer,nullable=False,default=0)
+    created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
+    account=db.relationship("UserAccount")
 
 class Meeting(db.Model):
     __tablename__="meetings"
@@ -229,8 +240,32 @@ def create_app():
                 except ValueError:pass
             status=(item.get("status") or "").strip().upper()
             if status in {"ACTIVE","ONBOARDING","FORMER"}:membership.status=status
+        account,_=bearer_account()
+        log=ImportLog(account_id=account.id,filename=(data.get("filename") or "import.xlsx")[:255],created_count=created,updated_count=updated,error_count=0)
+        db.session.add(log)
         db.session.commit()
         return {"status":"ok","created":created,"updated":updated}
+
+    @app.get("/api/members/import/history")
+    def import_members_history():
+        _,auth_error=require_admin()
+        if auth_error:return auth_error
+        rows=ImportLog.query.order_by(ImportLog.created_at.desc()).limit(50).all()
+        return jsonify([{"id":x.id,"filename":x.filename,"created":x.created_count,"updated":x.updated_count,"errors":x.error_count,"createdAt":x.created_at.isoformat(),"by":f"{x.account.member.first_name} {x.account.member.last_name}"} for x in rows])
+
+    @app.get("/api/members/export")
+    def export_members():
+        _,auth_error=require_admin()
+        if auth_error:return auth_error
+        wb=Workbook();ws=wb.active;ws.title="Membres"
+        ws.append(["Prénom","Nom","Société","Activité","Email","Téléphone","Date entrée","Date sortie","Statut","Accès Hub"])
+        for m in Member.query.order_by(Member.last_name,Member.first_name).all():
+            membership=Membership.query.filter_by(member_id=m.id).order_by(Membership.id.desc()).first()
+            ws.append([m.first_name,m.last_name,m.company or "",m.activity or "",m.email or "",m.phone or "",membership.start_date if membership else None,membership.end_date if membership else None,membership.status if membership else "",m.user_account.status if m.user_account else "NO_ACCOUNT"])
+        for col in ws.columns:
+            ws.column_dimensions[col[0].column_letter].width=min(max(12,max(len(str(cell.value or "")) for cell in col)+2),40)
+        out=io.BytesIO();wb.save(out);out.seek(0)
+        return send_file(out,as_attachment=True,download_name=f"BNI-Soignies-Membres-{date.today().isoformat()}.xlsx",mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     @app.post("/api/members/<int:member_id>/invite")
     def invite_member(member_id):
