@@ -1,10 +1,11 @@
-import os, secrets
+import os, secrets, io
 from datetime import datetime, date, timedelta
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import text
 from werkzeug.security import generate_password_hash, check_password_hash
+from openpyxl import load_workbook
 
 db=SQLAlchemy()
 
@@ -164,6 +165,72 @@ def create_app():
         if "endDate" in data:membership.end_date=date.fromisoformat(data["endDate"]) if data["endDate"] else None
         db.session.commit()
         return member_payload(member)
+
+    def parse_member_excel(file):
+        wb=load_workbook(io.BytesIO(file.read()),read_only=True,data_only=True)
+        ws=wb.active
+        rows=list(ws.iter_rows(values_only=True))
+        if not rows:return [],[],["Le fichier est vide."]
+        aliases={"prenom":"firstName","prénom":"firstName","nom":"lastName","societe":"company","société":"company","entreprise":"company","activite":"activity","activité":"activity","email":"email","e-mail":"email","mail":"email","telephone":"phone","téléphone":"phone","gsm":"phone","date entree":"startDate","date d'entrée":"startDate","date entrée":"startDate","statut":"status"}
+        import unicodedata
+        def norm(v):
+            s=str(v or "").strip().lower()
+            return " ".join(s.split())
+        headers=[norm(v) for v in rows[0]]
+        mapping={i:aliases[h] for i,h in enumerate(headers) if h in aliases}
+        if "firstName" not in mapping.values() or "lastName" not in mapping.values():
+            return [],[],["Colonnes Prénom et Nom obligatoires."]
+        preview=[];errors=[]
+        for n,row in enumerate(rows[1:],start=2):
+            data={}
+            for i,key in mapping.items():
+                if i>=len(row):continue
+                v=row[i]
+                if hasattr(v,"isoformat") and key=="startDate":v=v.date().isoformat() if hasattr(v,"date") else v.isoformat()
+                data[key]=str(v).strip() if v is not None else ""
+            if not data.get("firstName") and not data.get("lastName"):continue
+            if not data.get("firstName") or not data.get("lastName"):
+                errors.append(f"Ligne {n}: prénom ou nom manquant.");continue
+            existing=Member.query.filter(db.func.lower(Member.first_name)==data["firstName"].lower(),db.func.lower(Member.last_name)==data["lastName"].lower()).first()
+            data["row"]=n;data["action"]="UPDATE" if existing else "CREATE";data["existingId"]=existing.id if existing else None
+            preview.append(data)
+        return preview,[{"column":headers[i],"field":key} for i,key in mapping.items()],errors
+
+    @app.post("/api/members/import/preview")
+    def import_members_preview():
+        _,auth_error=require_admin()
+        if auth_error:return auth_error
+        file=request.files.get("file")
+        if not file or not file.filename.lower().endswith(".xlsx"):return {"error":"Fichier .xlsx requis."},400
+        try: preview,mapping,errors=parse_member_excel(file)
+        except Exception:return {"error":"Impossible de lire ce fichier Excel."},400
+        return {"rows":preview,"mapping":mapping,"errors":errors,"summary":{"total":len(preview),"create":sum(x["action"]=="CREATE" for x in preview),"update":sum(x["action"]=="UPDATE" for x in preview)}}
+
+    @app.post("/api/members/import/confirm")
+    def import_members_confirm():
+        _,auth_error=require_admin()
+        if auth_error:return auth_error
+        data=request.get_json(silent=True) or {}
+        rows=data.get("rows") or []
+        created=updated=0
+        for item in rows:
+            first=(item.get("firstName") or "").strip();last=(item.get("lastName") or "").strip()
+            if not first or not last:continue
+            member=Member.query.filter(db.func.lower(Member.first_name)==first.lower(),db.func.lower(Member.last_name)==last.lower()).first()
+            if member:updated+=1
+            else:
+                member=Member(first_name=first,last_name=last);db.session.add(member);db.session.flush();created+=1
+            for key,attr in [("company","company"),("activity","activity"),("email","email"),("phone","phone")]:
+                if item.get(key):setattr(member,attr,str(item[key]).strip())
+            membership=Membership.query.filter_by(member_id=member.id).order_by(Membership.id.desc()).first()
+            if not membership:membership=Membership(member_id=member.id,status="ACTIVE");db.session.add(membership)
+            if item.get("startDate"):
+                try:membership.start_date=date.fromisoformat(str(item["startDate"])[:10])
+                except ValueError:pass
+            status=(item.get("status") or "").strip().upper()
+            if status in {"ACTIVE","ONBOARDING","FORMER"}:membership.status=status
+        db.session.commit()
+        return {"status":"ok","created":created,"updated":updated}
 
     @app.post("/api/members/<int:member_id>/invite")
     def invite_member(member_id):
