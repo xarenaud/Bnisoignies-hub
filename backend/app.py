@@ -389,6 +389,59 @@ def create_app():
         db.session.commit()
         return {"status":"ok","memberId":active.id,"systemAdmin":True,"membershipStart":"2017-04-01","mandate":mandate.name,"role":"Président","roleStarts":"2026-10-01","duplicateCandidates":len(candidates)}
 
+    def mandate_payload(m):
+        assignments=RoleAssignment.query.filter_by(mandate_id=m.id,status="ACTIVE").all()
+        role_ids=list({a.role_id for a in assignments})
+        roles={r.id:r for r in Role.query.filter(Role.id.in_(role_ids)).all()} if role_ids else {}
+        member_ids=list({a.member_id for a in assignments})
+        members={x.id:x for x in Member.query.filter(Member.id.in_(member_ids)).all()} if member_ids else {}
+        return {"id":m.id,"name":m.name,"startDate":m.start_date.isoformat(),"endDate":m.end_date.isoformat(),"status":m.status,
+                "committee":[{"assignmentId":a.id,"roleId":a.role_id,"role":roles[a.role_id].name if a.role_id in roles else "—","memberId":a.member_id,
+                "member":f"{members[a.member_id].first_name} {members[a.member_id].last_name}" if a.member_id in members else "—"} for a in assignments]}
+
+    @app.get("/api/mandates")
+    def mandates_list():
+        _,auth_error=require_admin()
+        if auth_error:return auth_error
+        rows=Mandate.query.order_by(Mandate.start_date.desc()).all()
+        return jsonify([mandate_payload(x) for x in rows])
+
+    @app.route("/api/roles",methods=["GET","POST"])
+    def roles_api():
+        _,auth_error=require_admin()
+        if auth_error:return auth_error
+        if request.method=="POST":
+            data=request.get_json(silent=True) or {};name=(data.get("name") or "").strip()
+            if not name:return {"error":"Nom de fonction obligatoire."},400
+            existing=Role.query.filter(db.func.lower(Role.name)==name.lower()).first()
+            if existing:return {"id":existing.id,"name":existing.name}
+            role=Role(name=name);db.session.add(role);db.session.commit()
+            return {"id":role.id,"name":role.name},201
+        return jsonify([{"id":r.id,"name":r.name} for r in Role.query.order_by(Role.name).all()])
+
+    @app.post("/api/mandates/<int:mandate_id>/committee")
+    def committee_add(mandate_id):
+        _,auth_error=require_admin()
+        if auth_error:return auth_error
+        mandate=db.session.get(Mandate,mandate_id)
+        if not mandate:return {"error":"Mandat introuvable."},404
+        data=request.get_json(silent=True) or {}
+        try:member_id=int(data.get("memberId"));role_id=int(data.get("roleId"))
+        except (TypeError,ValueError):return {"error":"Membre et fonction obligatoires."},400
+        if not db.session.get(Member,member_id) or not db.session.get(Role,role_id):return {"error":"Membre ou fonction introuvable."},404
+        assignment=RoleAssignment.query.filter_by(mandate_id=mandate_id,member_id=member_id,role_id=role_id).first()
+        if assignment:assignment.status="ACTIVE"
+        else:assignment=RoleAssignment(mandate_id=mandate_id,member_id=member_id,role_id=role_id,status="ACTIVE");db.session.add(assignment)
+        db.session.commit();return mandate_payload(mandate),201
+
+    @app.delete("/api/mandates/<int:mandate_id>/committee/<int:assignment_id>")
+    def committee_remove(mandate_id,assignment_id):
+        _,auth_error=require_admin()
+        if auth_error:return auth_error
+        assignment=db.session.get(RoleAssignment,assignment_id)
+        if not assignment or assignment.mandate_id!=mandate_id:return {"error":"Attribution introuvable."},404
+        assignment.status="INACTIVE";db.session.commit();return {"status":"ok"}
+
     def meeting_payload(m):
         return {"id":m.id,"date":m.date.isoformat(),"startTime":m.start_time.strftime("%H:%M") if m.start_time else None,"type":m.type,"location":m.location,"status":m.status,"notes":m.notes}
 
