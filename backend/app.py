@@ -258,6 +258,30 @@ def create_app():
         # Temporary lightweight migration until Alembic is introduced.
         db.session.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS is_system_admin BOOLEAN NOT NULL DEFAULT FALSE"))
         db.session.commit()
+        # Idempotent bootstrap of the first system administrator.
+        admin_email=os.getenv("SYSTEM_ADMIN_EMAIL","").strip().lower()
+        if admin_email:
+            account=UserAccount.query.filter(db.func.lower(UserAccount.email)==admin_email).first()
+            if account:
+                account.is_system_admin=True
+                membership=Membership.query.filter_by(member_id=account.member_id).order_by(Membership.id.asc()).first()
+                if not membership:
+                    membership=Membership(member_id=account.member_id,status="ACTIVE")
+                    db.session.add(membership)
+                membership.start_date=date(2017,4,1)
+                membership.end_date=None
+                membership.status="ACTIVE"
+                mandate=Mandate.query.filter_by(name="Octobre 2026 - Mars 2027").first()
+                if not mandate:
+                    mandate=Mandate(name="Octobre 2026 - Mars 2027",start_date=date(2026,10,1),end_date=date(2027,3,31),status="PREPARATION")
+                    db.session.add(mandate);db.session.flush()
+                role=Role.query.filter(db.func.lower(Role.name)=="président").first()
+                if not role:
+                    role=Role(name="Président");db.session.add(role);db.session.flush()
+                assignment=RoleAssignment.query.filter_by(mandate_id=mandate.id,role_id=role.id,member_id=account.member_id).first()
+                if not assignment:
+                    db.session.add(RoleAssignment(mandate_id=mandate.id,role_id=role.id,member_id=account.member_id,status="ACTIVE"))
+                db.session.commit()
     return app
 
 app=create_app()
