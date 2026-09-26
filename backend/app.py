@@ -216,6 +216,37 @@ def create_app():
             db.session.delete(session);db.session.commit()
         return {"status":"ok"}
 
+    @app.post("/api/system/bootstrap-xavier")
+    def bootstrap_xavier():
+        key=request.headers.get("X-Bootstrap-Key","")
+        if not key or not secrets.compare_digest(key,os.getenv("BOOTSTRAP_KEY","disabled")):
+            return {"error":"Forbidden"},403
+        candidates=Member.query.filter(db.func.lower(Member.first_name)=="xavier",db.func.lower(Member.last_name)=="renaud").all()
+        active=None
+        for m in candidates:
+            if m.user_account and m.user_account.status=="ACTIVE" and m.user_account.password_hash:
+                active=m;break
+        if not active:
+            return {"error":"Aucun compte Xavier Renaud actif trouvé."},404
+        active.user_account.is_system_admin=True
+        membership=Membership.query.filter_by(member_id=active.id).order_by(Membership.id.asc()).first()
+        if not membership:
+            membership=Membership(member_id=active.id,status="ACTIVE");db.session.add(membership)
+        membership.start_date=date(2017,4,1)
+        membership.end_date=None
+        membership.status="ACTIVE"
+        mandate=Mandate.query.filter_by(name="Octobre 2026 - Mars 2027").first()
+        if not mandate:
+            mandate=Mandate(name="Octobre 2026 - Mars 2027",start_date=date(2026,10,1),end_date=date(2027,3,31),status="PREPARATION");db.session.add(mandate);db.session.flush()
+        role=Role.query.filter(db.func.lower(Role.name)=="président").first()
+        if not role:
+            role=Role(name="Président");db.session.add(role);db.session.flush()
+        assignment=RoleAssignment.query.filter_by(mandate_id=mandate.id,role_id=role.id,member_id=active.id).first()
+        if not assignment:
+            assignment=RoleAssignment(mandate_id=mandate.id,role_id=role.id,member_id=active.id,status="ACTIVE");db.session.add(assignment)
+        db.session.commit()
+        return {"status":"ok","memberId":active.id,"systemAdmin":True,"membershipStart":"2017-04-01","mandate":mandate.name,"role":"Président","roleStarts":"2026-10-01","duplicateCandidates":len(candidates)}
+
     @app.get("/api/meetings")
     def meetings():
         rows=Meeting.query.order_by(Meeting.date).all()
