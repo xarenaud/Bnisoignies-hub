@@ -389,10 +389,71 @@ def create_app():
         db.session.commit()
         return {"status":"ok","memberId":active.id,"systemAdmin":True,"membershipStart":"2017-04-01","mandate":mandate.name,"role":"Président","roleStarts":"2026-10-01","duplicateCandidates":len(candidates)}
 
-    @app.get("/api/meetings")
+    def meeting_payload(m):
+        return {"id":m.id,"date":m.date.isoformat(),"startTime":m.start_time.strftime("%H:%M") if m.start_time else None,"type":m.type,"location":m.location,"status":m.status,"notes":m.notes}
+
+    @app.route("/api/meetings",methods=["GET","POST"])
     def meetings():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        if request.method=="POST":
+            _,auth_error=require_admin()
+            if auth_error:return auth_error
+            data=request.get_json(silent=True) or {}
+            try: meeting_date=date.fromisoformat(data.get("date",""))
+            except ValueError:return {"error":"Date invalide."},400
+            allowed={"REGULAR","NO_MEETING","EXTERNAL","HOSTED","JOINT","SPECIAL"}
+            meeting_type=data.get("type","REGULAR")
+            if meeting_type not in allowed:return {"error":"Type de réunion invalide."},400
+            if Meeting.query.filter_by(date=meeting_date).first():return {"error":"Une entrée existe déjà à cette date."},409
+            start=None
+            if data.get("startTime"):
+                try:start=datetime.strptime(data["startTime"],"%H:%M").time()
+                except ValueError:return {"error":"Heure invalide."},400
+            m=Meeting(date=meeting_date,start_time=start,type=meeting_type,location=(data.get("location") or "").strip() or None,status=data.get("status","PLANNED"),notes=(data.get("notes") or "").strip() or None)
+            db.session.add(m);db.session.commit()
+            return meeting_payload(m),201
         rows=Meeting.query.order_by(Meeting.date).all()
-        return jsonify([{"id":m.id,"date":m.date.isoformat(),"type":m.type,"location":m.location,"status":m.status,"notes":m.notes} for m in rows])
+        return jsonify([meeting_payload(m) for m in rows])
+
+    @app.route("/api/meetings/<int:meeting_id>",methods=["PATCH","DELETE"])
+    def meeting_detail(meeting_id):
+        _,auth_error=require_admin()
+        if auth_error:return auth_error
+        m=db.session.get(Meeting,meeting_id)
+        if not m:return {"error":"Réunion introuvable."},404
+        if request.method=="DELETE":
+            db.session.delete(m);db.session.commit();return {"status":"ok"}
+        data=request.get_json(silent=True) or {}
+        if "date" in data:
+            try:m.date=date.fromisoformat(data["date"])
+            except ValueError:return {"error":"Date invalide."},400
+        if "type" in data:m.type=data["type"]
+        if "location" in data:m.location=(data["location"] or "").strip() or None
+        if "notes" in data:m.notes=(data["notes"] or "").strip() or None
+        if "status" in data:m.status=data["status"]
+        if "startTime" in data:
+            try:m.start_time=datetime.strptime(data["startTime"],"%H:%M").time() if data["startTime"] else None
+            except ValueError:return {"error":"Heure invalide."},400
+        db.session.commit();return meeting_payload(m)
+
+    @app.post("/api/meetings/generate-thursdays")
+    def generate_thursdays():
+        _,auth_error=require_admin()
+        if auth_error:return auth_error
+        data=request.get_json(silent=True) or {}
+        try:start=date.fromisoformat(data.get("startDate",""));end=date.fromisoformat(data.get("endDate",""))
+        except ValueError:return {"error":"Dates invalides."},400
+        if end<start:return {"error":"La date de fin doit suivre la date de début."},400
+        d=start
+        while d.weekday()!=3:d+=timedelta(days=1)
+        created=0
+        while d<=end:
+            if not Meeting.query.filter_by(date=d).first():
+                db.session.add(Meeting(date=d,start_time=datetime.strptime(data.get("startTime","07:00"),"%H:%M").time(),type="REGULAR",location=(data.get("location") or "").strip() or None,status="PLANNED"));created+=1
+            d+=timedelta(days=7)
+        db.session.commit()
+        return {"status":"ok","created":created}
 
     with app.app_context():
         db.create_all()
