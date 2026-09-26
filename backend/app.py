@@ -3,6 +3,7 @@ from datetime import datetime, date, timedelta
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import text
 from werkzeug.security import generate_password_hash, check_password_hash
 
 db=SQLAlchemy()
@@ -254,6 +255,9 @@ def create_app():
 
     with app.app_context():
         db.create_all()
+        # Temporary lightweight migration until Alembic is introduced.
+        db.session.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS is_system_admin BOOLEAN NOT NULL DEFAULT FALSE"))
+        db.session.commit()
     return app
 
 app=create_app()
