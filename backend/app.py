@@ -99,8 +99,21 @@ def create_app():
     def api():
         return {"name":"BNI Soignies Hub API","version":"0.1.0"}
 
+    def require_admin():
+        account,_=bearer_account()
+        if not account:return None,({"error":"Authentification requise."},401)
+        if not account_payload(account)["isAdmin"]:return None,({"error":"Accès administrateur requis."},403)
+        return account,None
+
+    def member_payload(m):
+        membership=Membership.query.filter_by(member_id=m.id).order_by(Membership.id.desc()).first()
+        account=m.user_account
+        return {"id":m.id,"firstName":m.first_name,"lastName":m.last_name,"company":m.company,"activity":m.activity,"email":m.email,"phone":m.phone,"status":membership.status if membership else None,"startDate":membership.start_date.isoformat() if membership and membership.start_date else None,"endDate":membership.end_date.isoformat() if membership and membership.end_date else None,"accountStatus":account.status if account else "NO_ACCOUNT","isSystemAdmin":bool(account and account.is_system_admin)}
+
     @app.route("/api/members",methods=["GET","POST"])
     def members():
+        _,auth_error=require_admin()
+        if auth_error:return auth_error
         if request.method=="POST":
             data=request.get_json(silent=True) or {}
             first=(data.get("firstName") or "").strip()
@@ -121,15 +134,41 @@ def create_app():
             db.session.commit()
             return {"id":member.id,"firstName":member.first_name,"lastName":member.last_name,"company":member.company,"activity":member.activity,"email":member.email,"phone":member.phone,"status":"ACTIVE"},201
         rows=Member.query.order_by(Member.last_name,Member.first_name).all()
-        result=[]
-        for m in rows:
-            membership=Membership.query.filter_by(member_id=m.id).order_by(Membership.id.desc()).first()
-            account=m.user_account
-            result.append({"id":m.id,"firstName":m.first_name,"lastName":m.last_name,"company":m.company,"activity":m.activity,"email":m.email,"phone":m.phone,"status":membership.status if membership else None,"accountStatus":account.status if account else "NO_ACCOUNT"})
-        return jsonify(result)
+        return jsonify([member_payload(m) for m in rows])
+
+    @app.route("/api/members/<int:member_id>",methods=["GET","PATCH"])
+    def member_detail(member_id):
+        _,auth_error=require_admin()
+        if auth_error:return auth_error
+        member=db.session.get(Member,member_id)
+        if not member:return {"error":"Membre introuvable."},404
+        if request.method=="GET":return member_payload(member)
+        data=request.get_json(silent=True) or {}
+        for key,attr in [("firstName","first_name"),("lastName","last_name"),("company","company"),("activity","activity"),("phone","phone")]:
+            if key in data:setattr(member,attr,(data.get(key) or "").strip() or None)
+        if not member.first_name or not member.last_name:return {"error":"Prénom et nom obligatoires."},400
+        if "email" in data:
+            email=(data.get("email") or "").strip().lower() or None
+            other=Member.query.filter(Member.id!=member.id,db.func.lower(Member.email)==email).first() if email else None
+            if other:return {"error":"Cette adresse e-mail appartient déjà à un autre membre."},409
+            if member.user_account and email and member.user_account.email.lower()!=email:
+                used=UserAccount.query.filter(UserAccount.id!=member.user_account.id,db.func.lower(UserAccount.email)==email).first()
+                if used:return {"error":"Cette adresse e-mail est déjà liée à un autre compte."},409
+                member.user_account.email=email
+            member.email=email
+        membership=Membership.query.filter_by(member_id=member.id).order_by(Membership.id.desc()).first()
+        if not membership:
+            membership=Membership(member_id=member.id,status="ACTIVE");db.session.add(membership)
+        if "status" in data:membership.status=data["status"]
+        if "startDate" in data:membership.start_date=date.fromisoformat(data["startDate"]) if data["startDate"] else None
+        if "endDate" in data:membership.end_date=date.fromisoformat(data["endDate"]) if data["endDate"] else None
+        db.session.commit()
+        return member_payload(member)
 
     @app.post("/api/members/<int:member_id>/invite")
     def invite_member(member_id):
+        _,auth_error=require_admin()
+        if auth_error:return auth_error
         member=db.session.get(Member,member_id)
         if not member:
             return {"error":"Membre introuvable."},404
