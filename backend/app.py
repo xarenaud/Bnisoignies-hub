@@ -83,6 +83,22 @@ class ImportLog(db.Model):
     created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
     account=db.relationship("UserAccount")
 
+class Duty(db.Model):
+    __tablename__="duties"
+    id=db.Column(db.Integer,primary_key=True)
+    code=db.Column(db.String(40),nullable=False,unique=True)
+    name=db.Column(db.String(120),nullable=False)
+    active=db.Column(db.Boolean,nullable=False,default=True)
+
+class DutyAssignment(db.Model):
+    __tablename__="duty_assignments"
+    id=db.Column(db.Integer,primary_key=True)
+    meeting_id=db.Column(db.Integer,db.ForeignKey("meetings.id"),nullable=False,index=True)
+    duty_id=db.Column(db.Integer,db.ForeignKey("duties.id"),nullable=False,index=True)
+    member_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    status=db.Column(db.String(30),nullable=False,default="DRAFT")
+    created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
+
 class Meeting(db.Model):
     __tablename__="meetings"
     id=db.Column(db.Integer,primary_key=True)
@@ -445,6 +461,69 @@ def create_app():
     def meeting_payload(m):
         return {"id":m.id,"date":m.date.isoformat(),"startTime":m.start_time.strftime("%H:%M") if m.start_time else None,"type":m.type,"location":m.location,"status":m.status,"notes":m.notes}
 
+    def assignment_payload(a):
+        duty=db.session.get(Duty,a.duty_id);member=db.session.get(Member,a.member_id);meeting=db.session.get(Meeting,a.meeting_id)
+        return {"id":a.id,"meetingId":a.meeting_id,"date":meeting.date.isoformat() if meeting else None,"dutyId":a.duty_id,"duty":duty.name if duty else "—","memberId":a.member_id,"member":f"{member.first_name} {member.last_name}" if member else "—","status":a.status}
+
+    @app.get("/api/duties")
+    def duties_list():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        return jsonify([{"id":d.id,"code":d.code,"name":d.name,"active":d.active} for d in Duty.query.order_by(Duty.id).all()])
+
+    @app.get("/api/duty-assignments")
+    def duty_assignments_list():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        rows=DutyAssignment.query.join(Meeting,DutyAssignment.meeting_id==Meeting.id).order_by(Meeting.date,DutyAssignment.duty_id).all()
+        return jsonify([assignment_payload(a) for a in rows])
+
+    @app.post("/api/duty-assignments/generate")
+    def generate_duty_assignments():
+        _,auth_error=require_admin()
+        if auth_error:return auth_error
+        data=request.get_json(silent=True) or {}
+        try:start=date.fromisoformat(data.get("startDate",""));end=date.fromisoformat(data.get("endDate",""))
+        except ValueError:return {"error":"Dates invalides."},400
+        duties=Duty.query.filter_by(active=True).order_by(Duty.id).all()
+        if not duties:return {"error":"Aucune fonction d'accueil configurée."},400
+        meetings=Meeting.query.filter(Meeting.date>=start,Meeting.date<=end,Meeting.type!="NO_MEETING").order_by(Meeting.date).all()
+        active_members=[]
+        for m in Member.query.order_by(Member.last_name,Member.first_name).all():
+            ms=Membership.query.filter_by(member_id=m.id).order_by(Membership.id.desc()).first()
+            if ms and ms.status=="ACTIVE" and (not ms.end_date or ms.end_date>=start):active_members.append(m)
+        if len(active_members)<len(duties):return {"error":"Pas assez de membres actifs pour générer la rotation."},400
+        existing=DutyAssignment.query.join(Meeting,DutyAssignment.meeting_id==Meeting.id).filter(Meeting.date>=start,Meeting.date<=end).all()
+        total={m.id:0 for m in active_members};per={(m.id,d.id):0 for m in active_members for d in duties};last={m.id:date.min for m in active_members}
+        for a in existing:
+            if a.member_id in total:
+                total[a.member_id]+=1;per[(a.member_id,a.duty_id)]=per.get((a.member_id,a.duty_id),0)+1
+                mt=db.session.get(Meeting,a.meeting_id)
+                if mt and mt.date>last[a.member_id]:last[a.member_id]=mt.date
+        created=0
+        for mt in meetings:
+            used={a.member_id for a in existing if a.meeting_id==mt.id}
+            for duty in duties:
+                if any(a.meeting_id==mt.id and a.duty_id==duty.id for a in existing):continue
+                candidates=[m for m in active_members if m.id not in used and (not Membership.query.filter_by(member_id=m.id).order_by(Membership.id.desc()).first().start_date or Membership.query.filter_by(member_id=m.id).order_by(Membership.id.desc()).first().start_date<=mt.date)]
+                if not candidates:continue
+                candidates.sort(key=lambda m:(total[m.id],per.get((m.id,duty.id),0),last[m.id],m.last_name.lower(),m.first_name.lower()))
+                chosen=candidates[0]
+                a=DutyAssignment(meeting_id=mt.id,duty_id=duty.id,member_id=chosen.id,status="DRAFT");db.session.add(a);existing.append(a);used.add(chosen.id);total[chosen.id]+=1;per[(chosen.id,duty.id)]=per.get((chosen.id,duty.id),0)+1;last[chosen.id]=mt.date;created+=1
+        db.session.commit()
+        return {"status":"ok","created":created}
+
+    @app.post("/api/duty-assignments/publish")
+    def publish_duty_assignments():
+        _,auth_error=require_admin()
+        if auth_error:return auth_error
+        data=request.get_json(silent=True) or {}
+        try:start=date.fromisoformat(data.get("startDate",""));end=date.fromisoformat(data.get("endDate",""))
+        except ValueError:return {"error":"Dates invalides."},400
+        rows=DutyAssignment.query.join(Meeting,DutyAssignment.meeting_id==Meeting.id).filter(Meeting.date>=start,Meeting.date<=end,DutyAssignment.status=="DRAFT").all()
+        for a in rows:a.status="PUBLISHED"
+        db.session.commit();return {"status":"ok","published":len(rows)}
+
     @app.route("/api/meetings",methods=["GET","POST"])
     def meetings():
         account,_=bearer_account()
@@ -512,6 +591,10 @@ def create_app():
         db.create_all()
         # Temporary lightweight migration until Alembic is introduced.
         db.session.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS is_system_admin BOOLEAN NOT NULL DEFAULT FALSE"))
+        db.session.commit()
+        for code,name in [("SETUP","Préparation"),("RECEPTION","Accueil des invités"),("FOLLOWUP","Suivi des invités")]:
+            duty=Duty.query.filter_by(code=code).first()
+            if not duty:db.session.add(Duty(code=code,name=name,active=True))
         db.session.commit()
         # Idempotent bootstrap of the first system administrator.
         admin_email=os.getenv("SYSTEM_ADMIN_EMAIL","").strip().lower()
