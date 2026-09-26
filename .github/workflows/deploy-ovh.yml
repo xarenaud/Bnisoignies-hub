@@ -1,0 +1,51 @@
+name: Deploy BNI Soignies Hub to OVH
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-bni-soignies-hub
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install
+      - name: Build
+        run: npm run build
+      - name: Verify build
+        run: |
+          test -f dist/index.html
+          grep -q '/Bnisoignies-hub/' dist/index.html
+      - name: Install LFTP
+        run: sudo apt-get update && sudo apt-get install -y lftp
+      - name: Deploy to OVH
+        env:
+          OVH_HOST: ${{ secrets.OVH_HOST }}
+          OVH_USERNAME: ${{ secrets.OVH_USERNAME }}
+          OVH_PASSWORD: ${{ secrets.OVH_PASSWORD }}
+          OVH_PORT: ${{ secrets.OVH_PORT }}
+          OVH_PATH: ${{ secrets.OVH_PATH }}
+        run: |
+          test -n "$OVH_HOST"
+          test -n "$OVH_USERNAME"
+          test -n "$OVH_PASSWORD"
+          test -n "$OVH_PORT"
+          test -n "$OVH_PATH"
+          if [ "$OVH_PORT" = "21" ]; then
+            lftp -c "set ftp:ssl-allow true; set ftp:ssl-force false; set ftp:ssl-protect-data true; set ssl:verify-certificate yes; set net:max-retries 2; set net:timeout 20; open -u '$OVH_USERNAME','$OVH_PASSWORD' ftp://$OVH_HOST:$OVH_PORT; mirror -R --delete --verbose dist/ '$OVH_PATH'; bye"
+          else
+            lftp -c "set sftp:auto-confirm yes; set net:max-retries 2; set net:timeout 20; open -u '$OVH_USERNAME','$OVH_PASSWORD' sftp://$OVH_HOST:$OVH_PORT; mirror -R --delete --verbose dist/ '$OVH_PATH'; bye"
+          fi
