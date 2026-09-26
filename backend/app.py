@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, date
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 
@@ -75,10 +75,30 @@ def create_app():
     def api():
         return {"name":"BNI Soignies Hub API","version":"0.1.0"}
 
-    @app.get("/api/members")
+    @app.route("/api/members",methods=["GET","POST"])
     def members():
+        if request.method=="POST":
+            data=request.get_json(silent=True) or {}
+            first=(data.get("firstName") or "").strip()
+            last=(data.get("lastName") or "").strip()
+            if not first or not last:
+                return {"error":"firstName and lastName are required"},400
+            email=(data.get("email") or "").strip() or None
+            if email and Member.query.filter(db.func.lower(Member.email)==email.lower()).first():
+                return {"error":"A member with this email already exists"},409
+            member=Member(first_name=first,last_name=last,company=(data.get("company") or "").strip() or None,activity=(data.get("activity") or "").strip() or None,email=email,phone=(data.get("phone") or "").strip() or None)
+            db.session.add(member)
+            db.session.flush()
+            membership=Membership(member_id=member.id,start_date=date.today(),status="ACTIVE")
+            db.session.add(membership)
+            db.session.commit()
+            return {"id":member.id,"firstName":member.first_name,"lastName":member.last_name,"company":member.company,"activity":member.activity,"email":member.email,"phone":member.phone,"status":"ACTIVE"},201
         rows=Member.query.order_by(Member.last_name,Member.first_name).all()
-        return jsonify([{"id":m.id,"firstName":m.first_name,"lastName":m.last_name,"company":m.company,"activity":m.activity,"email":m.email,"phone":m.phone} for m in rows])
+        result=[]
+        for m in rows:
+            membership=Membership.query.filter_by(member_id=m.id).order_by(Membership.id.desc()).first()
+            result.append({"id":m.id,"firstName":m.first_name,"lastName":m.last_name,"company":m.company,"activity":m.activity,"email":m.email,"phone":m.phone,"status":membership.status if membership else None})
+        return jsonify(result)
 
     @app.get("/api/meetings")
     def meetings():
