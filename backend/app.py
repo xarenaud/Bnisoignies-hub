@@ -51,6 +51,24 @@ class Membership(db.Model):
     status=db.Column(db.String(30),nullable=False,default="ACTIVE")
     member=db.relationship("Member",backref="memberships")
 
+class Mentorship(db.Model):
+    __tablename__="mentorships"
+    id=db.Column(db.Integer,primary_key=True)
+    member_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    mentor_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    status=db.Column(db.String(30),nullable=False,default="ACTIVE")
+    started_at=db.Column(db.Date,default=date.today)
+    completed_at=db.Column(db.Date)
+
+class OnboardingStep(db.Model):
+    __tablename__="onboarding_steps"
+    id=db.Column(db.Integer,primary_key=True)
+    member_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    code=db.Column(db.String(60),nullable=False)
+    label=db.Column(db.String(180),nullable=False)
+    completed=db.Column(db.Boolean,nullable=False,default=False)
+    completed_at=db.Column(db.DateTime)
+
 class Mandate(db.Model):
     __tablename__="mandates"
     id=db.Column(db.Integer,primary_key=True)
@@ -447,6 +465,77 @@ def create_app():
         return {"id":m.id,"name":m.name,"startDate":m.start_date.isoformat(),"endDate":m.end_date.isoformat(),"status":m.status,
                 "committee":[{"assignmentId":a.id,"roleId":a.role_id,"role":roles[a.role_id].name if a.role_id in roles else "—","memberId":a.member_id,
                 "member":f"{members[a.member_id].first_name} {members[a.member_id].last_name}" if a.member_id in members else "—"} for a in assignments]}
+
+    ONBOARDING_DEFAULTS=[
+        ("OBSERVE_SETUP","Observer la préparation de salle"),
+        ("OBSERVE_RECEPTION","Observer l'accueil des invités"),
+        ("OBSERVE_FOLLOWUP","Observer le suivi des invités"),
+        ("INFOMERCIAL","Formation infomercial"),
+        ("INVITATION","Formation invitation"),
+        ("MENTOR_VALIDATION","Validation finale par le mentor"),
+    ]
+
+    def onboarding_payload(member_id):
+        m=db.session.get(Member,member_id)
+        membership=Membership.query.filter_by(member_id=member_id).order_by(Membership.id.desc()).first()
+        mentorship=Mentorship.query.filter_by(member_id=member_id,status="ACTIVE").order_by(Mentorship.id.desc()).first()
+        mentor=db.session.get(Member,mentorship.mentor_id) if mentorship else None
+        steps=OnboardingStep.query.filter_by(member_id=member_id).order_by(OnboardingStep.id).all()
+        return {"memberId":member_id,"member":f"{m.first_name} {m.last_name}" if m else "—","status":membership.status if membership else None,
+          "mentorId":mentor.id if mentor else None,"mentor":f"{mentor.first_name} {mentor.last_name}" if mentor else None,
+          "steps":[{"id":x.id,"code":x.code,"label":x.label,"completed":x.completed,"completedAt":x.completed_at.isoformat() if x.completed_at else None} for x in steps],
+          "progress":round(100*sum(x.completed for x in steps)/len(steps)) if steps else 0}
+
+    @app.get("/api/onboarding")
+    def onboarding_list():
+        _,auth_error=require_admin()
+        if auth_error:return auth_error
+        ids=[x.member_id for x in Membership.query.filter(Membership.status=="ONBOARDING").all()]
+        return jsonify([onboarding_payload(i) for i in ids])
+
+    @app.post("/api/members/<int:member_id>/onboarding")
+    def start_onboarding(member_id):
+        _,auth_error=require_admin()
+        if auth_error:return auth_error
+        data=request.get_json(silent=True) or {}
+        try:mentor_id=int(data.get("mentorId"))
+        except (TypeError,ValueError):return {"error":"Mentor obligatoire."},400
+        if mentor_id==member_id or not db.session.get(Member,mentor_id):return {"error":"Mentor invalide."},400
+        membership=Membership.query.filter_by(member_id=member_id).order_by(Membership.id.desc()).first()
+        if not membership:return {"error":"Adhésion introuvable."},404
+        membership.status="ONBOARDING"
+        Mentorship.query.filter_by(member_id=member_id,status="ACTIVE").update({"status":"COMPLETED","completed_at":date.today()})
+        db.session.add(Mentorship(member_id=member_id,mentor_id=mentor_id,status="ACTIVE",started_at=date.today()))
+        existing={x.code for x in OnboardingStep.query.filter_by(member_id=member_id).all()}
+        for code,label in ONBOARDING_DEFAULTS:
+            if code not in existing:db.session.add(OnboardingStep(member_id=member_id,code=code,label=label))
+        db.session.commit();return onboarding_payload(member_id),201
+
+    @app.patch("/api/onboarding/<int:member_id>/steps/<int:step_id>")
+    def onboarding_step(member_id,step_id):
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        step=db.session.get(OnboardingStep,step_id)
+        if not step or step.member_id!=member_id:return {"error":"Étape introuvable."},404
+        mentorship=Mentorship.query.filter_by(member_id=member_id,status="ACTIVE").first()
+        if not (account.is_system_admin or (mentorship and mentorship.mentor_id==account.member_id)):return {"error":"Validation réservée au mentor ou à l'administrateur."},403
+        completed=bool((request.get_json(silent=True) or {}).get("completed",True))
+        step.completed=completed;step.completed_at=datetime.utcnow() if completed else None
+        db.session.commit();return onboarding_payload(member_id)
+
+    @app.post("/api/onboarding/<int:member_id>/complete")
+    def complete_onboarding(member_id):
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        mentorship=Mentorship.query.filter_by(member_id=member_id,status="ACTIVE").first()
+        if not (account.is_system_admin or (mentorship and mentorship.mentor_id==account.member_id)):return {"error":"Validation réservée au mentor ou à l'administrateur."},403
+        steps=OnboardingStep.query.filter_by(member_id=member_id).all()
+        if not steps or not all(x.completed for x in steps):return {"error":"Toutes les étapes doivent être validées."},400
+        membership=Membership.query.filter_by(member_id=member_id).order_by(Membership.id.desc()).first()
+        membership.status="ACTIVE"
+        if mentorship:mentorship.status="COMPLETED";mentorship.completed_at=date.today()
+        notify(member_id,"ONBOARDING_COMPLETE","Intégration terminée","Votre mentor a validé votre intégration. Vous êtes maintenant membre autonome.","profile")
+        db.session.commit();return onboarding_payload(member_id)
 
     @app.get("/api/mandates")
     def mandates_list():
