@@ -216,6 +216,17 @@ def create_app():
     def api():
         return {"name":"BNI Soignies Hub API","version":"0.1.0"}
 
+    def active_mandate(on_date=None):
+        d=on_date or date.today()
+        return Mandate.query.filter(Mandate.start_date<=d,Mandate.end_date>=d).order_by(Mandate.start_date.desc()).first()
+
+    def current_assignment(member_id,role_id=None,on_date=None):
+        mandate=active_mandate(on_date)
+        if not mandate:return None
+        q=RoleAssignment.query.filter_by(member_id=member_id,mandate_id=mandate.id,status="ACTIVE")
+        if role_id is not None:q=q.filter_by(role_id=role_id)
+        return q.first()
+
     def require_admin():
         account,_=bearer_account()
         if not account:return None,({"error":"Authentification requise."},401)
@@ -801,6 +812,16 @@ def create_app():
         if mentorship:mentorship.status="COMPLETED";mentorship.completed_at=date.today()
         notify(member_id,"ONBOARDING_COMPLETE","Intégration terminée","Votre mentor a validé votre intégration. Vous êtes maintenant membre autonome.","profile")
         db.session.commit();return onboarding_payload(member_id)
+
+    @app.get("/api/mandates/status")
+    def mandate_status():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        today=date.today();current=active_mandate(today)
+        nxt=Mandate.query.filter(Mandate.start_date>today).order_by(Mandate.start_date.asc()).first()
+        previous=Mandate.query.filter(Mandate.end_date<today).order_by(Mandate.end_date.desc()).first()
+        def p(x):return None if not x else {"id":x.id,"name":x.name,"startDate":x.start_date.isoformat(),"endDate":x.end_date.isoformat()}
+        return {"today":today.isoformat(),"current":p(current),"next":p(nxt),"previous":p(previous),"systemAdmin":bool(account.is_system_admin)}
 
     @app.get("/api/mandates")
     def mandates_list():
