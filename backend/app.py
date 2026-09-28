@@ -508,6 +508,26 @@ def create_app():
         role=db.session.get(Role,x.role_id);fm=db.session.get(Mandate,x.from_mandate_id);tm=db.session.get(Mandate,x.to_mandate_id)
         return {"id":x.id,"title":x.title,"notes":x.notes,"roleId":x.role_id,"role":role.name if role else "—","fromMandate":fm.name if fm else "—","toMandate":tm.name if tm else "—","outgoingConfirmed":bool(x.outgoing_confirmed_at),"incomingConfirmed":bool(x.incoming_confirmed_at),"complete":bool(x.outgoing_confirmed_at and x.incoming_confirmed_at)}
 
+    @app.post("/api/handovers/generate")
+    def handovers_generate():
+        _,err=require_admin()
+        if err:return err
+        d=request.get_json(silent=True) or {}
+        try:from_id=int(d["fromMandateId"]);to_id=int(d["toMandateId"])
+        except (KeyError,TypeError,ValueError):return {"error":"Mandatures obligatoires."},400
+        incoming=RoleAssignment.query.filter_by(mandate_id=to_id,status="ACTIVE").all()
+        created=0
+        defaults=["Points clés et dossiers en cours","Procédures et échéances","Ressources et documents","Plateformes, accès et renouvellements"]
+        for a in incoming:
+            outgoing=RoleAssignment.query.filter_by(mandate_id=from_id,role_id=a.role_id,status="ACTIVE").first()
+            if not outgoing:continue
+            for title in defaults:
+                exists=HandoverItem.query.filter_by(from_mandate_id=from_id,to_mandate_id=to_id,role_id=a.role_id,title=title).first()
+                if not exists:
+                    db.session.add(HandoverItem(from_mandate_id=from_id,to_mandate_id=to_id,role_id=a.role_id,title=title));created+=1
+        db.session.commit()
+        return {"created":created,"items":[handover_payload(x) for x in HandoverItem.query.filter_by(from_mandate_id=from_id,to_mandate_id=to_id).order_by(HandoverItem.role_id,HandoverItem.id).all()]}
+
     @app.get("/api/handovers")
     def handovers_list():
         account,_=bearer_account()
