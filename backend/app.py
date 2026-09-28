@@ -478,6 +478,30 @@ def create_app():
         rows=DutyAssignment.query.join(Meeting,DutyAssignment.meeting_id==Meeting.id).order_by(Meeting.date,DutyAssignment.duty_id).all()
         return jsonify([assignment_payload(a) for a in rows])
 
+    @app.get("/api/me/duty-assignments")
+    def my_duty_assignments():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        rows=DutyAssignment.query.join(Meeting,DutyAssignment.meeting_id==Meeting.id).filter(DutyAssignment.member_id==account.member_id,DutyAssignment.status=="PUBLISHED").order_by(Meeting.date).all()
+        return jsonify([assignment_payload(a) for a in rows])
+
+    @app.post("/api/me/duty-assignments/<int:assignment_id>/unavailable")
+    def my_duty_unavailable(assignment_id):
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        a=db.session.get(DutyAssignment,assignment_id)
+        if not a or a.member_id!=account.member_id:return {"error":"Affectation introuvable."},404
+        if a.status!="PUBLISHED":return {"error":"Cette permanence n'est pas publiée."},400
+        a.status="TO_REASSIGN";db.session.commit()
+        return {"status":"TO_REASSIGN","message":"Indisponibilité enregistrée. Le responsable peut maintenant réattribuer cette permanence."}
+
+    @app.get("/api/me/profile")
+    def my_profile():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        m=account.member
+        return {"id":m.id,"firstName":m.first_name,"lastName":m.last_name,"company":m.company,"activity":m.activity,"email":account.email,"phone":m.phone,"roles":account_payload(account)["roles"]}
+
     @app.patch("/api/duty-assignments/<int:assignment_id>")
     def update_duty_assignment(assignment_id):
         _,auth_error=require_admin()
