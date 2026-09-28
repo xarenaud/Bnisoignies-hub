@@ -51,6 +51,29 @@ class Membership(db.Model):
     status=db.Column(db.String(30),nullable=False,default="ACTIVE")
     member=db.relationship("Member",backref="memberships")
 
+class Resource(db.Model):
+    __tablename__="resources"
+    id=db.Column(db.Integer,primary_key=True)
+    title=db.Column(db.String(255),nullable=False)
+    description=db.Column(db.Text)
+    category=db.Column(db.String(60),nullable=False,default="GENERAL")
+    url=db.Column(db.Text)
+    role_id=db.Column(db.Integer,db.ForeignKey("roles.id"),nullable=True,index=True)
+    board_only=db.Column(db.Boolean,nullable=False,default=False)
+    active=db.Column(db.Boolean,nullable=False,default=True)
+    created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
+
+class Platform(db.Model):
+    __tablename__="platforms"
+    id=db.Column(db.Integer,primary_key=True)
+    name=db.Column(db.String(180),nullable=False)
+    description=db.Column(db.Text)
+    url=db.Column(db.Text)
+    owner_role_id=db.Column(db.Integer,db.ForeignKey("roles.id"),nullable=True,index=True)
+    board_only=db.Column(db.Boolean,nullable=False,default=False)
+    renewal_info=db.Column(db.String(255))
+    active=db.Column(db.Boolean,nullable=False,default=True)
+
 class Mentorship(db.Model):
     __tablename__="mentorships"
     id=db.Column(db.Integer,primary_key=True)
@@ -465,6 +488,57 @@ def create_app():
         return {"id":m.id,"name":m.name,"startDate":m.start_date.isoformat(),"endDate":m.end_date.isoformat(),"status":m.status,
                 "committee":[{"assignmentId":a.id,"roleId":a.role_id,"role":roles[a.role_id].name if a.role_id in roles else "—","memberId":a.member_id,
                 "member":f"{members[a.member_id].first_name} {members[a.member_id].last_name}" if a.member_id in members else "—"} for a in assignments]}
+
+    def board_member(account):
+        if account.is_system_admin:return True
+        today=date.today();mandate=Mandate.query.filter(Mandate.start_date<=today,Mandate.end_date>=today).order_by(Mandate.start_date.desc()).first()
+        if not mandate:return False
+        allowed=["président","president","vice-président","vice president","vice-president","secrétaire trésorier","secretaire tresorier","secrétaire-trésorier","secretaire-tresorier"]
+        assignments=RoleAssignment.query.filter_by(mandate_id=mandate.id,member_id=account.member_id,status="ACTIVE").all()
+        return any((db.session.get(Role,x.role_id) and db.session.get(Role,x.role_id).name.lower().strip() in allowed) for x in assignments)
+
+    def current_role_ids(account):
+        today=date.today();mandates=Mandate.query.filter(Mandate.start_date<=today,Mandate.end_date>=today).all()
+        mids=[m.id for m in mandates]
+        if not mids:return set()
+        return {x.role_id for x in RoleAssignment.query.filter(RoleAssignment.mandate_id.in_(mids),RoleAssignment.member_id==account.member_id,RoleAssignment.status=="ACTIVE").all()}
+
+    def can_view_library_item(account,role_id,board_only):
+        if account.is_system_admin:return True
+        if board_only and not board_member(account):return False
+        return not role_id or role_id in current_role_ids(account)
+
+    @app.get("/api/resources")
+    def resources_list():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        rows=Resource.query.filter_by(active=True).order_by(Resource.category,Resource.title).all()
+        return jsonify([{"id":x.id,"title":x.title,"description":x.description,"category":x.category,"url":x.url,"roleId":x.role_id,"boardOnly":x.board_only} for x in rows if can_view_library_item(account,x.role_id,x.board_only)])
+
+    @app.post("/api/resources")
+    def resources_create():
+        _,err=require_admin()
+        if err:return err
+        d=request.get_json(silent=True) or {}
+        if not d.get("title"):return {"error":"Titre obligatoire."},400
+        x=Resource(title=d["title"].strip(),description=d.get("description"),category=d.get("category","GENERAL"),url=d.get("url"),role_id=d.get("roleId") or None,board_only=bool(d.get("boardOnly",False)))
+        db.session.add(x);db.session.commit();return {"id":x.id},201
+
+    @app.get("/api/platforms")
+    def platforms_list():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        rows=Platform.query.filter_by(active=True).order_by(Platform.name).all()
+        return jsonify([{"id":x.id,"name":x.name,"description":x.description,"url":x.url,"ownerRoleId":x.owner_role_id,"boardOnly":x.board_only,"renewalInfo":x.renewal_info} for x in rows if can_view_library_item(account,x.owner_role_id,x.board_only)])
+
+    @app.post("/api/platforms")
+    def platforms_create():
+        _,err=require_admin()
+        if err:return err
+        d=request.get_json(silent=True) or {}
+        if not d.get("name"):return {"error":"Nom obligatoire."},400
+        x=Platform(name=d["name"].strip(),description=d.get("description"),url=d.get("url"),owner_role_id=d.get("ownerRoleId") or None,board_only=bool(d.get("boardOnly",False)),renewal_info=d.get("renewalInfo"))
+        db.session.add(x);db.session.commit();return {"id":x.id},201
 
     def require_alumni_access():
         account,_=bearer_account()
