@@ -51,6 +51,17 @@ class Membership(db.Model):
     status=db.Column(db.String(30),nullable=False,default="ACTIVE")
     member=db.relationship("Member",backref="memberships")
 
+class AuditLog(db.Model):
+    __tablename__="audit_logs"
+    id=db.Column(db.Integer,primary_key=True)
+    account_id=db.Column(db.Integer,db.ForeignKey("user_accounts.id"),index=True)
+    member_id=db.Column(db.Integer,db.ForeignKey("members.id"),index=True)
+    action=db.Column(db.String(100),nullable=False,index=True)
+    entity_type=db.Column(db.String(80),index=True)
+    entity_id=db.Column(db.String(80))
+    details=db.Column(db.Text)
+    created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False,index=True)
+
 class HandoverItem(db.Model):
     __tablename__="handover_items"
     id=db.Column(db.Integer,primary_key=True)
@@ -215,6 +226,12 @@ def create_app():
     @app.get("/api")
     def api():
         return {"name":"BNI Soignies Hub API","version":"0.1.0"}
+
+    def audit(account,action,entity_type=None,entity_id=None,details=None):
+        try:
+            db.session.add(AuditLog(account_id=account.id if account else None,member_id=account.member_id if account else None,action=action,entity_type=entity_type,entity_id=str(entity_id) if entity_id is not None else None,details=details))
+        except Exception:
+            pass
 
     def active_mandate(on_date=None):
         d=on_date or date.today()
@@ -586,6 +603,7 @@ def create_app():
         if side=="outgoing":x.outgoing_confirmed_at=datetime.utcnow()
         elif side=="incoming":x.incoming_confirmed_at=datetime.utcnow()
         else:return {"error":"Sens de validation invalide."},400
+        audit(account,"HANDOVER_CONFIRMED","handover",x.id,f"side={side}")
         db.session.commit();return handover_payload(x)
 
     def board_member(account):
@@ -812,6 +830,17 @@ def create_app():
         if mentorship:mentorship.status="COMPLETED";mentorship.completed_at=date.today()
         notify(member_id,"ONBOARDING_COMPLETE","Intégration terminée","Votre mentor a validé votre intégration. Vous êtes maintenant membre autonome.","profile")
         db.session.commit();return onboarding_payload(member_id)
+
+    @app.get("/api/audit")
+    def audit_list():
+        account,err=require_admin()
+        if err:return err
+        q=AuditLog.query.order_by(AuditLog.created_at.desc()).limit(300).all()
+        out=[]
+        for x in q:
+            m=db.session.get(Member,x.member_id) if x.member_id else None
+            out.append({"id":x.id,"actor":f"{m.first_name} {m.last_name}" if m else "Système","action":x.action,"entityType":x.entity_type,"entityId":x.entity_id,"details":x.details,"createdAt":x.created_at.isoformat()})
+        return jsonify(out)
 
     @app.get("/api/mandates/readiness")
     def mandate_readiness():
