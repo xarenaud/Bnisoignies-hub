@@ -645,6 +645,11 @@ def create_app():
         if a.status!="PUBLISHED":return {"error":"Cette permanence n'est pas publiée."},400
         a.status="TO_REASSIGN";existing=SwapRequest.query.filter_by(assignment_id=a.id,status="OPEN").first()
         if not existing:db.session.add(SwapRequest(assignment_id=a.id,requester_id=account.member_id,status="OPEN"))
+        meeting=db.session.get(Meeting,a.meeting_id);duty=db.session.get(Duty,a.duty_id)
+        for m in Member.query.all():
+            ms=Membership.query.filter_by(member_id=m.id).order_by(Membership.id.desc()).first()
+            if m.id!=account.member_id and ms and ms.status=="ACTIVE" and (not ms.start_date or ms.start_date<=meeting.date) and (not ms.end_date or ms.end_date>=meeting.date):
+                notify(m.id,"DUTY_REPLACEMENT","Remplacement recherché",f"{account.member.first_name} {account.member.last_name} cherche un remplacement pour {duty.name} le {meeting.date.strftime('%d/%m/%Y')}.","duties")
         db.session.commit()
         return {"status":"TO_REASSIGN","message":"Indisponibilité enregistrée. Les autres membres peuvent proposer de reprendre cette permanence."}
 
@@ -675,7 +680,13 @@ def create_app():
         if x.requester_id==account.member_id:return {"error":"Vous ne pouvez pas reprendre votre propre permanence."},400
         a=db.session.get(DutyAssignment,x.assignment_id)
         if DutyAssignment.query.filter(DutyAssignment.meeting_id==a.meeting_id,DutyAssignment.member_id==account.member_id,DutyAssignment.id!=a.id).first():return {"error":"Vous avez déjà une fonction lors de cette réunion."},409
-        x.volunteer_id=account.member_id;x.status="ACCEPTED";a.member_id=account.member_id;a.status="PUBLISHED";db.session.commit()
+        meeting=db.session.get(Meeting,a.meeting_id)
+        ms=Membership.query.filter_by(member_id=account.member_id).order_by(Membership.id.desc()).first()
+        if not ms or ms.status!="ACTIVE" or (ms.start_date and ms.start_date>meeting.date) or (ms.end_date and ms.end_date<meeting.date):return {"error":"Vous n'êtes pas membre actif à cette date."},403
+        requester=x.requester_id;x.volunteer_id=account.member_id;x.status="ACCEPTED";a.member_id=account.member_id;a.status="PUBLISHED"
+        notify(requester,"DUTY_REPLACED","Remplacement trouvé",f"{account.member.first_name} {account.member.last_name} reprend votre permanence du {meeting.date.strftime('%d/%m/%Y')}.","duties")
+        notify(account.member_id,"DUTY_ASSIGNED","Permanence reprise",f"Vous êtes maintenant titulaire de cette permanence du {meeting.date.strftime('%d/%m/%Y')}.","duties")
+        db.session.commit()
         return swap_payload(x)
 
     @app.patch("/api/duty-assignments/<int:assignment_id>")
@@ -694,7 +705,11 @@ def create_app():
             ms=Membership.query.filter_by(member_id=member_id).order_by(Membership.id.desc()).first()
             if not ms or ms.status!="ACTIVE" or (ms.start_date and ms.start_date>meeting.date) or (ms.end_date and ms.end_date<meeting.date):return {"error":"Membre non actif à cette date."},400
             if DutyAssignment.query.filter(DutyAssignment.meeting_id==a.meeting_id,DutyAssignment.member_id==member_id,DutyAssignment.id!=a.id).first():return {"error":"Ce membre a déjà une fonction ce jour-là."},409
-            a.member_id=member_id
+            previous=a.member_id;a.member_id=member_id
+            SwapRequest.query.filter_by(assignment_id=a.id,status="OPEN").update({"status":"CANCELLED"})
+            if previous!=member_id:
+                notify(previous,"DUTY_CHANGED","Permanence réattribuée",f"Votre permanence du {meeting.date.strftime('%d/%m/%Y')} a été réattribuée.","duties")
+                notify(member_id,"DUTY_ASSIGNED","Nouvelle permanence",f"Une permanence vous a été attribuée le {meeting.date.strftime('%d/%m/%Y')}.","duties")
         db.session.commit();return assignment_payload(a)
 
     @app.post("/api/duty-assignments/<int:assignment_id>/reassign")
@@ -714,7 +729,23 @@ def create_app():
             total=DutyAssignment.query.filter_by(member_id=m.id).count()
             specific=DutyAssignment.query.filter_by(member_id=m.id,duty_id=duty.id).count()
             return (total,specific,m.last_name.lower(),m.first_name.lower())
-        candidates.sort(key=score);a.member_id=candidates[0].id;db.session.commit();return assignment_payload(a)
+        candidates=[m for m in candidates if m.id!=a.member_id] or candidates
+        candidates.sort(key=score);previous=a.member_id;a.member_id=candidates[0].id
+        SwapRequest.query.filter_by(assignment_id=a.id,status="OPEN").update({"status":"CANCELLED"})
+        notify(previous,"DUTY_CHANGED","Permanence réattribuée",f"Votre permanence du {meeting.date.strftime('%d/%m/%Y')} a été réattribuée.","duties")
+        notify(a.member_id,"DUTY_ASSIGNED","Nouvelle permanence",f"Une permanence vous a été attribuée le {meeting.date.strftime('%d/%m/%Y')}.","duties")
+        db.session.commit();return assignment_payload(a)
+
+    @app.get("/api/planning/welcome")
+    def welcome_planning():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        rows=DutyAssignment.query.join(Meeting,DutyAssignment.meeting_id==Meeting.id).filter(DutyAssignment.status.in_(["PUBLISHED","TO_REASSIGN"])).order_by(Meeting.date,DutyAssignment.duty_id).all()
+        grouped={}
+        for a in rows:
+            p=assignment_payload(a);key=p["date"]
+            grouped.setdefault(key,{"date":key,"assignments":[]})["assignments"].append(p)
+        return jsonify(list(grouped.values()))
 
     @app.post("/api/duty-assignments/generate")
     def generate_duty_assignments():
