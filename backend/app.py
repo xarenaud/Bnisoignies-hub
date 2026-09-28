@@ -813,6 +813,31 @@ def create_app():
         notify(member_id,"ONBOARDING_COMPLETE","Intégration terminée","Votre mentor a validé votre intégration. Vous êtes maintenant membre autonome.","profile")
         db.session.commit();return onboarding_payload(member_id)
 
+    @app.get("/api/mandates/readiness")
+    def mandate_readiness():
+        account,err=require_admin()
+        if err:return err
+        today=date.today();nxt=Mandate.query.filter(Mandate.start_date>today).order_by(Mandate.start_date.asc()).first()
+        if not nxt:return {"ready":False,"blocking":["Aucune prochaine mandature n'est configurée."],"warnings":[]},200
+        assignments=RoleAssignment.query.filter_by(mandate_id=nxt.id,status="ACTIVE").all()
+        role_names={r.id:r.name for r in Role.query.all()}
+        names=[role_names.get(a.role_id,"").lower() for a in assignments]
+        blocking=[];warnings=[]
+        if not any(n in {"président","president"} for n in names):blocking.append("Aucun Président n'est désigné pour la prochaine mandature.")
+        if not assignments:blocking.append("Le futur comité ne contient encore aucune affectation.")
+        duplicate_members={}
+        for a in assignments:duplicate_members.setdefault(a.member_id,[]).append(a.role_id)
+        multi=[mid for mid,rs in duplicate_members.items() if len(rs)>1]
+        if multi:warnings.append(f"{len(multi)} membre(s) cumulent plusieurs fonctions dans la prochaine mandature.")
+        handovers=HandoverItem.query.filter_by(to_mandate_id=nxt.id).all()
+        incomplete=[x for x in handovers if not (x.outgoing_confirmed_at and x.incoming_confirmed_at)]
+        if not handovers:warnings.append("Aucune checklist de passage de flambeau n'a encore été générée.")
+        elif incomplete:warnings.append(f"{len(incomplete)} élément(s) de transmission restent à valider.")
+        if nxt.start_date>today:
+            days=(nxt.start_date-today).days
+        else:days=0
+        return {"ready":not blocking,"nextMandate":{"id":nxt.id,"name":nxt.name,"startDate":nxt.start_date.isoformat(),"endDate":nxt.end_date.isoformat()},"daysUntilStart":days,"assignments":len(assignments),"handoverTotal":len(handovers),"handoverIncomplete":len(incomplete),"blocking":blocking,"warnings":warnings,"systemAdminProtected":bool(account.is_system_admin)}
+
     @app.get("/api/mandates/status")
     def mandate_status():
         account,_=bearer_account()
