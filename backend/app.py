@@ -51,6 +51,18 @@ class Membership(db.Model):
     status=db.Column(db.String(30),nullable=False,default="ACTIVE")
     member=db.relationship("Member",backref="memberships")
 
+class HandoverItem(db.Model):
+    __tablename__="handover_items"
+    id=db.Column(db.Integer,primary_key=True)
+    from_mandate_id=db.Column(db.Integer,db.ForeignKey("mandates.id"),nullable=False,index=True)
+    to_mandate_id=db.Column(db.Integer,db.ForeignKey("mandates.id"),nullable=False,index=True)
+    role_id=db.Column(db.Integer,db.ForeignKey("roles.id"),nullable=False,index=True)
+    title=db.Column(db.String(255),nullable=False)
+    notes=db.Column(db.Text)
+    outgoing_confirmed_at=db.Column(db.DateTime)
+    incoming_confirmed_at=db.Column(db.DateTime)
+    created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
+
 class Resource(db.Model):
     __tablename__="resources"
     id=db.Column(db.Integer,primary_key=True)
@@ -491,6 +503,45 @@ def create_app():
         return {"id":m.id,"name":m.name,"startDate":m.start_date.isoformat(),"endDate":m.end_date.isoformat(),"status":m.status,
                 "committee":[{"assignmentId":a.id,"roleId":a.role_id,"role":roles[a.role_id].name if a.role_id in roles else "—","memberId":a.member_id,
                 "member":f"{members[a.member_id].first_name} {members[a.member_id].last_name}" if a.member_id in members else "—"} for a in assignments]}
+
+    def handover_payload(x):
+        role=db.session.get(Role,x.role_id);fm=db.session.get(Mandate,x.from_mandate_id);tm=db.session.get(Mandate,x.to_mandate_id)
+        return {"id":x.id,"title":x.title,"notes":x.notes,"roleId":x.role_id,"role":role.name if role else "—","fromMandate":fm.name if fm else "—","toMandate":tm.name if tm else "—","outgoingConfirmed":bool(x.outgoing_confirmed_at),"incomingConfirmed":bool(x.incoming_confirmed_at),"complete":bool(x.outgoing_confirmed_at and x.incoming_confirmed_at)}
+
+    @app.get("/api/handovers")
+    def handovers_list():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        if account.is_system_admin:return jsonify([handover_payload(x) for x in HandoverItem.query.order_by(HandoverItem.id.desc()).all()])
+        role_ids=current_role_ids(account)
+        return jsonify([handover_payload(x) for x in HandoverItem.query.filter(HandoverItem.role_id.in_(role_ids)).order_by(HandoverItem.id.desc()).all()]) if role_ids else jsonify([])
+
+    @app.post("/api/handovers")
+    def handovers_create():
+        _,err=require_admin()
+        if err:return err
+        d=request.get_json(silent=True) or {}
+        try:x=HandoverItem(from_mandate_id=int(d["fromMandateId"]),to_mandate_id=int(d["toMandateId"]),role_id=int(d["roleId"]),title=d["title"].strip(),notes=d.get("notes"))
+        except (KeyError,TypeError,ValueError):return {"error":"Données de transmission incomplètes."},400
+        db.session.add(x);db.session.commit();return handover_payload(x),201
+
+    @app.patch("/api/handovers/<int:item_id>/confirm")
+    def handover_confirm(item_id):
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        x=db.session.get(HandoverItem,item_id)
+        if not x:return {"error":"Transmission introuvable."},404
+        d=request.get_json(silent=True) or {};side=d.get("side")
+        if account.is_system_admin:
+            allowed=True
+        else:
+            mandate_id=x.from_mandate_id if side=="outgoing" else x.to_mandate_id
+            allowed=RoleAssignment.query.filter_by(mandate_id=mandate_id,role_id=x.role_id,member_id=account.member_id,status="ACTIVE").first() is not None
+        if not allowed:return {"error":"Cette validation appartient au responsable de la fonction."},403
+        if side=="outgoing":x.outgoing_confirmed_at=datetime.utcnow()
+        elif side=="incoming":x.incoming_confirmed_at=datetime.utcnow()
+        else:return {"error":"Sens de validation invalide."},400
+        db.session.commit();return handover_payload(x)
 
     def board_member(account):
         if account.is_system_admin:return True
