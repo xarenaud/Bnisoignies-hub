@@ -524,6 +524,28 @@ def create_app():
         x=Resource(title=d["title"].strip(),description=d.get("description"),category=d.get("category","GENERAL"),url=d.get("url"),role_id=d.get("roleId") or None,board_only=bool(d.get("boardOnly",False)))
         db.session.add(x);db.session.commit();return {"id":x.id},201
 
+    @app.patch("/api/resources/<int:item_id>")
+    def resources_update(item_id):
+        _,err=require_admin()
+        if err:return err
+        x=db.session.get(Resource,item_id)
+        if not x:return {"error":"Ressource introuvable."},404
+        d=request.get_json(silent=True) or {}
+        for key,attr in [("title","title"),("description","description"),("category","category"),("url","url")]:
+            if key in d:setattr(x,attr,d[key])
+        if "roleId" in d:x.role_id=d.get("roleId") or None
+        if "boardOnly" in d:x.board_only=bool(d["boardOnly"])
+        if "active" in d:x.active=bool(d["active"])
+        db.session.commit();return {"status":"ok"}
+
+    @app.delete("/api/resources/<int:item_id>")
+    def resources_delete(item_id):
+        _,err=require_admin()
+        if err:return err
+        x=db.session.get(Resource,item_id)
+        if not x:return {"error":"Ressource introuvable."},404
+        x.active=False;db.session.commit();return {"status":"archived"}
+
     @app.get("/api/platforms")
     def platforms_list():
         account,_=bearer_account()
@@ -539,6 +561,28 @@ def create_app():
         if not d.get("name"):return {"error":"Nom obligatoire."},400
         x=Platform(name=d["name"].strip(),description=d.get("description"),url=d.get("url"),owner_role_id=d.get("ownerRoleId") or None,board_only=bool(d.get("boardOnly",False)),renewal_info=d.get("renewalInfo"))
         db.session.add(x);db.session.commit();return {"id":x.id},201
+
+    @app.patch("/api/platforms/<int:item_id>")
+    def platforms_update(item_id):
+        _,err=require_admin()
+        if err:return err
+        x=db.session.get(Platform,item_id)
+        if not x:return {"error":"Plateforme introuvable."},404
+        d=request.get_json(silent=True) or {}
+        for key,attr in [("name","name"),("description","description"),("url","url"),("renewalInfo","renewal_info")]:
+            if key in d:setattr(x,attr,d[key])
+        if "ownerRoleId" in d:x.owner_role_id=d.get("ownerRoleId") or None
+        if "boardOnly" in d:x.board_only=bool(d["boardOnly"])
+        if "active" in d:x.active=bool(d["active"])
+        db.session.commit();return {"status":"ok"}
+
+    @app.delete("/api/platforms/<int:item_id>")
+    def platforms_delete(item_id):
+        _,err=require_admin()
+        if err:return err
+        x=db.session.get(Platform,item_id)
+        if not x:return {"error":"Plateforme introuvable."},404
+        x.active=False;db.session.commit();return {"status":"archived"}
 
     def require_alumni_access():
         account,_=bearer_account()
