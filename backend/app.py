@@ -500,9 +500,35 @@ def create_app():
         rows=DutyAssignment.query.join(Meeting,DutyAssignment.meeting_id==Meeting.id).order_by(Meeting.date,DutyAssignment.duty_id).all()
         return jsonify([assignment_payload(a) for a in rows])
 
+    REQUEST_ROLE_HINTS={
+        "INFOMERCIAL":["éducation","education","formation"],
+        "COMMUNICATION":["réseaux sociaux","reseaux sociaux","communication"],
+        "TRAINING":["éducation","education","formation"],
+        "MENTORING":["mentor","mentorat"],
+        "EVENT":["événement","evenement","events"],
+        "INVITATION":["accueil","invité","invite"],
+    }
+
+    def request_assignees(kind,when=None):
+        when=when or date.today()
+        mandates=Mandate.query.filter(Mandate.start_date<=when,Mandate.end_date>=when).all()
+        if not mandates:return []
+        hints=REQUEST_ROLE_HINTS.get(kind,[])
+        roles=Role.query.all()
+        role_ids=[r.id for r in roles if any(h in r.name.lower() for h in hints)]
+        if not role_ids:return []
+        rows=RoleAssignment.query.filter(RoleAssignment.mandate_id.in_([m.id for m in mandates]),RoleAssignment.role_id.in_(role_ids),RoleAssignment.status=="ACTIVE").all()
+        members={m.id:m for m in Member.query.filter(Member.id.in_(list({a.member_id for a in rows}))).all()} if rows else {}
+        rolemap={r.id:r.name for r in roles}
+        return [{"memberId":a.member_id,"member":f"{members[a.member_id].first_name} {members[a.member_id].last_name}","role":rolemap.get(a.role_id,"—")} for a in rows if a.member_id in members]
+
+    def can_manage_request(account,kind):
+        if account.is_system_admin:return True
+        return any(x["memberId"]==account.member_id for x in request_assignees(kind))
+
     def member_request_payload(x):
-        m=db.session.get(Member,x.member_id)
-        return {"id":x.id,"type":x.type,"title":x.title,"message":x.message,"guestName":x.guest_name,"guestEmail":x.guest_email,"eventDate":x.event_date.isoformat() if x.event_date else None,"status":x.status,"createdAt":x.created_at.isoformat(),"member":f"{m.first_name} {m.last_name}" if m else "—"}
+        m=db.session.get(Member,x.member_id);assignees=request_assignees(x.type,x.created_at.date() if x.created_at else None)
+        return {"id":x.id,"type":x.type,"title":x.title,"message":x.message,"guestName":x.guest_name,"guestEmail":x.guest_email,"eventDate":x.event_date.isoformat() if x.event_date else None,"status":x.status,"createdAt":x.created_at.isoformat(),"member":f"{m.first_name} {m.last_name}" if m else "—","assignees":assignees,"routingStatus":"ROUTED" if assignees else "UNASSIGNED"}
 
     @app.route("/api/me/requests",methods=["GET","POST"])
     def my_requests():
@@ -524,19 +550,30 @@ def create_app():
 
     @app.get("/api/member-requests")
     def all_member_requests():
-        _,auth_error=require_admin()
-        if auth_error:return auth_error
-        return jsonify([member_request_payload(x) for x in MemberRequest.query.order_by(MemberRequest.created_at.desc()).all()])
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        rows=MemberRequest.query.order_by(MemberRequest.created_at.desc()).all()
+        if not account.is_system_admin:
+            rows=[x for x in rows if can_manage_request(account,x.type)]
+        return jsonify([member_request_payload(x) for x in rows])
 
     @app.patch("/api/member-requests/<int:request_id>")
     def update_member_request(request_id):
-        _,auth_error=require_admin()
-        if auth_error:return auth_error
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
         x=db.session.get(MemberRequest,request_id)
         if not x:return {"error":"Demande introuvable."},404
+        if not can_manage_request(account,x.type):return {"error":"Cette demande relève d'une autre fonction."},403
         status=(request.get_json(silent=True) or {}).get("status")
         if status not in {"TO_PROCESS","IN_PROGRESS","COMPLETED"}:return {"error":"Statut invalide."},400
         x.status=status;db.session.commit();return member_request_payload(x)
+
+    @app.get("/api/me/request-inbox")
+    def my_request_inbox():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        rows=MemberRequest.query.order_by(MemberRequest.created_at.desc()).all()
+        return jsonify([member_request_payload(x) for x in rows if can_manage_request(account,x.type)])
 
     @app.get("/api/me/duty-assignments")
     def my_duty_assignments():
