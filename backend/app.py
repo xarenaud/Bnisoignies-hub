@@ -99,6 +99,19 @@ class DutyAssignment(db.Model):
     status=db.Column(db.String(30),nullable=False,default="DRAFT")
     created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
 
+class MemberRequest(db.Model):
+    __tablename__="member_requests"
+    id=db.Column(db.Integer,primary_key=True)
+    member_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    type=db.Column(db.String(40),nullable=False,index=True)
+    title=db.Column(db.String(255))
+    message=db.Column(db.Text)
+    guest_name=db.Column(db.String(255))
+    guest_email=db.Column(db.String(255))
+    event_date=db.Column(db.Date)
+    status=db.Column(db.String(30),nullable=False,default="TO_PROCESS")
+    created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
+
 class SwapRequest(db.Model):
     __tablename__="swap_requests"
     id=db.Column(db.Integer,primary_key=True)
@@ -486,6 +499,44 @@ def create_app():
         if not account:return {"error":"Authentification requise."},401
         rows=DutyAssignment.query.join(Meeting,DutyAssignment.meeting_id==Meeting.id).order_by(Meeting.date,DutyAssignment.duty_id).all()
         return jsonify([assignment_payload(a) for a in rows])
+
+    def member_request_payload(x):
+        m=db.session.get(Member,x.member_id)
+        return {"id":x.id,"type":x.type,"title":x.title,"message":x.message,"guestName":x.guest_name,"guestEmail":x.guest_email,"eventDate":x.event_date.isoformat() if x.event_date else None,"status":x.status,"createdAt":x.created_at.isoformat(),"member":f"{m.first_name} {m.last_name}" if m else "—"}
+
+    @app.route("/api/me/requests",methods=["GET","POST"])
+    def my_requests():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        if request.method=="GET":
+            rows=MemberRequest.query.filter_by(member_id=account.member_id).order_by(MemberRequest.created_at.desc()).all()
+            return jsonify([member_request_payload(x) for x in rows])
+        data=request.get_json(silent=True) or {};kind=(data.get("type") or "").strip().upper()
+        allowed={"INFOMERCIAL","COMMUNICATION","TRAINING","MENTORING","EVENT","INVITATION"}
+        if kind not in allowed:return {"error":"Type de demande invalide."},400
+        event_date=None
+        if data.get("eventDate"):
+            try:event_date=date.fromisoformat(data["eventDate"])
+            except ValueError:return {"error":"Date invalide."},400
+        x=MemberRequest(member_id=account.member_id,type=kind,title=(data.get("title") or "").strip() or None,message=(data.get("message") or "").strip() or None,guest_name=(data.get("guestName") or "").strip() or None,guest_email=(data.get("guestEmail") or "").strip() or None,event_date=event_date,status="TO_PROCESS")
+        db.session.add(x);db.session.commit()
+        return member_request_payload(x),201
+
+    @app.get("/api/member-requests")
+    def all_member_requests():
+        _,auth_error=require_admin()
+        if auth_error:return auth_error
+        return jsonify([member_request_payload(x) for x in MemberRequest.query.order_by(MemberRequest.created_at.desc()).all()])
+
+    @app.patch("/api/member-requests/<int:request_id>")
+    def update_member_request(request_id):
+        _,auth_error=require_admin()
+        if auth_error:return auth_error
+        x=db.session.get(MemberRequest,request_id)
+        if not x:return {"error":"Demande introuvable."},404
+        status=(request.get_json(silent=True) or {}).get("status")
+        if status not in {"TO_PROCESS","IN_PROGRESS","COMPLETED"}:return {"error":"Statut invalide."},400
+        x.status=status;db.session.commit();return member_request_payload(x)
 
     @app.get("/api/me/duty-assignments")
     def my_duty_assignments():
