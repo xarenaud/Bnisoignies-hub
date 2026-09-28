@@ -61,6 +61,9 @@ class Resource(db.Model):
     role_id=db.Column(db.Integer,db.ForeignKey("roles.id"),nullable=True,index=True)
     board_only=db.Column(db.Boolean,nullable=False,default=False)
     active=db.Column(db.Boolean,nullable=False,default=True)
+    file_name=db.Column(db.String(255))
+    file_type=db.Column(db.String(120))
+    file_data=db.Column(db.LargeBinary)
     created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
 
 class Platform(db.Model):
@@ -508,12 +511,38 @@ def create_app():
         if board_only and not board_member(account):return False
         return not role_id or role_id in current_role_ids(account)
 
+    ALLOWED_RESOURCE_EXTENSIONS={"pdf","doc","docx","xls","xlsx","png","jpg","jpeg","webp"}
+    def resource_meta(x):
+        return {"id":x.id,"title":x.title,"description":x.description,"category":x.category,"url":x.url,"roleId":x.role_id,"boardOnly":x.board_only,"fileName":x.file_name,"hasFile":bool(x.file_data)}
+
+    @app.post("/api/resources/upload")
+    def resources_upload():
+        _,err=require_admin()
+        if err:return err
+        file=request.files.get("file")
+        if not file or not file.filename:return {"error":"Fichier obligatoire."},400
+        ext=file.filename.rsplit(".",1)[-1].lower() if "." in file.filename else ""
+        if ext not in ALLOWED_RESOURCE_EXTENSIONS:return {"error":"Type de fichier non autorisé."},400
+        data=file.read()
+        if len(data)>15*1024*1024:return {"error":"Fichier trop volumineux (15 Mo maximum)."},413
+        x=Resource(title=(request.form.get("title") or file.filename).strip(),description=request.form.get("description"),category=request.form.get("category") or "GENERAL",role_id=int(request.form["roleId"]) if request.form.get("roleId") else None,board_only=request.form.get("boardOnly")=="true",file_name=file.filename,file_type=file.mimetype,file_data=data)
+        db.session.add(x);db.session.commit();return resource_meta(x),201
+
+    @app.get("/api/resources/<int:item_id>/file")
+    def resource_file(item_id):
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        x=db.session.get(Resource,item_id)
+        if not x or not x.active or not x.file_data:return {"error":"Fichier introuvable."},404
+        if not can_view_library_item(account,x.role_id,x.board_only):return {"error":"Accès refusé."},403
+        return send_file(io.BytesIO(x.file_data),mimetype=x.file_type or "application/octet-stream",download_name=x.file_name or "ressource",as_attachment=True)
+
     @app.get("/api/resources")
     def resources_list():
         account,_=bearer_account()
         if not account:return {"error":"Authentification requise."},401
         rows=Resource.query.filter_by(active=True).order_by(Resource.category,Resource.title).all()
-        return jsonify([{"id":x.id,"title":x.title,"description":x.description,"category":x.category,"url":x.url,"roleId":x.role_id,"boardOnly":x.board_only} for x in rows if can_view_library_item(account,x.role_id,x.board_only)])
+        return jsonify([resource_meta(x) for x in rows if can_view_library_item(account,x.role_id,x.board_only)])
 
     @app.post("/api/resources")
     def resources_create():
