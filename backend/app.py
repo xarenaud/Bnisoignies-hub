@@ -99,6 +99,17 @@ class DutyAssignment(db.Model):
     status=db.Column(db.String(30),nullable=False,default="DRAFT")
     created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
 
+class Notification(db.Model):
+    __tablename__="notifications"
+    id=db.Column(db.Integer,primary_key=True)
+    member_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    type=db.Column(db.String(50),nullable=False)
+    title=db.Column(db.String(255),nullable=False)
+    message=db.Column(db.Text)
+    link=db.Column(db.String(120))
+    read_at=db.Column(db.DateTime)
+    created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False,index=True)
+
 class MemberRequest(db.Model):
     __tablename__="member_requests"
     id=db.Column(db.Integer,primary_key=True)
@@ -530,6 +541,35 @@ def create_app():
         m=db.session.get(Member,x.member_id);assignees=request_assignees(x.type,x.created_at.date() if x.created_at else None)
         return {"id":x.id,"type":x.type,"title":x.title,"message":x.message,"guestName":x.guest_name,"guestEmail":x.guest_email,"eventDate":x.event_date.isoformat() if x.event_date else None,"status":x.status,"createdAt":x.created_at.isoformat(),"member":f"{m.first_name} {m.last_name}" if m else "—","assignees":assignees,"routingStatus":"ROUTED" if assignees else "UNASSIGNED"}
 
+    def notify(member_id,kind,title,message=None,link=None):
+        n=Notification(member_id=member_id,type=kind,title=title,message=message,link=link)
+        db.session.add(n);return n
+
+    def notification_payload(n):
+        return {"id":n.id,"type":n.type,"title":n.title,"message":n.message,"link":n.link,"read":bool(n.read_at),"createdAt":n.created_at.isoformat()}
+
+    @app.get("/api/me/notifications")
+    def my_notifications():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        rows=Notification.query.filter_by(member_id=account.member_id).order_by(Notification.created_at.desc()).limit(100).all()
+        return {"unread":sum(not x.read_at for x in rows),"items":[notification_payload(x) for x in rows]}
+
+    @app.post("/api/me/notifications/<int:notification_id>/read")
+    def read_notification(notification_id):
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        n=db.session.get(Notification,notification_id)
+        if not n or n.member_id!=account.member_id:return {"error":"Notification introuvable."},404
+        n.read_at=datetime.utcnow();db.session.commit();return notification_payload(n)
+
+    @app.post("/api/me/notifications/read-all")
+    def read_all_notifications():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        Notification.query.filter_by(member_id=account.member_id,read_at=None).update({"read_at":datetime.utcnow()})
+        db.session.commit();return {"status":"ok"}
+
     @app.route("/api/me/requests",methods=["GET","POST"])
     def my_requests():
         account,_=bearer_account()
@@ -545,7 +585,10 @@ def create_app():
             try:event_date=date.fromisoformat(data["eventDate"])
             except ValueError:return {"error":"Date invalide."},400
         x=MemberRequest(member_id=account.member_id,type=kind,title=(data.get("title") or "").strip() or None,message=(data.get("message") or "").strip() or None,guest_name=(data.get("guestName") or "").strip() or None,guest_email=(data.get("guestEmail") or "").strip() or None,event_date=event_date,status="TO_PROCESS")
-        db.session.add(x);db.session.commit()
+        db.session.add(x);db.session.flush()
+        for target in request_assignees(kind):
+            if target["memberId"]!=account.member_id:notify(target["memberId"],"NEW_REQUEST",f"Nouvelle demande : {kind.title()}",f"{account.member.first_name} {account.member.last_name} a envoyé une nouvelle demande.","requests")
+        db.session.commit()
         return member_request_payload(x),201
 
     @app.get("/api/member-requests")
@@ -566,7 +609,9 @@ def create_app():
         if not can_manage_request(account,x.type):return {"error":"Cette demande relève d'une autre fonction."},403
         status=(request.get_json(silent=True) or {}).get("status")
         if status not in {"TO_PROCESS","IN_PROGRESS","COMPLETED"}:return {"error":"Statut invalide."},400
-        x.status=status;db.session.commit();return member_request_payload(x)
+        x.status=status
+        if x.member_id!=account.member_id:notify(x.member_id,"REQUEST_STATUS","Mise à jour de votre demande",f"Votre demande est maintenant : {status.replace('_',' ').lower()}.","my-requests")
+        db.session.commit();return member_request_payload(x)
 
     @app.get("/api/me/requests/summary")
     def my_requests_summary():
