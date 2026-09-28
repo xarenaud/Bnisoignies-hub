@@ -640,7 +640,7 @@ def create_app():
         data=file.read()
         if len(data)>15*1024*1024:return {"error":"Fichier trop volumineux (15 Mo maximum)."},413
         x=Resource(title=(request.form.get("title") or file.filename).strip(),description=request.form.get("description"),category=request.form.get("category") or "GENERAL",role_id=int(request.form["roleId"]) if request.form.get("roleId") else None,board_only=request.form.get("boardOnly")=="true",file_name=file.filename,file_type=file.mimetype,file_data=data)
-        db.session.add(x);db.session.commit();return resource_meta(x),201
+        db.session.add(x);db.session.flush();audit(_, "RESOURCE_FILE_UPLOADED","resource",x.id,x.file_name);db.session.commit();return resource_meta(x),201
 
     @app.get("/api/resources/<int:item_id>/file")
     def resource_file(item_id):
@@ -703,7 +703,7 @@ def create_app():
         d=request.get_json(silent=True) or {}
         if not d.get("name"):return {"error":"Nom obligatoire."},400
         x=Platform(name=d["name"].strip(),description=d.get("description"),url=d.get("url"),owner_role_id=d.get("ownerRoleId") or None,board_only=bool(d.get("boardOnly",False)),renewal_info=d.get("renewalInfo"))
-        db.session.add(x);db.session.commit();return {"id":x.id},201
+        db.session.add(x);db.session.flush();audit(_, "PLATFORM_CREATED","platform",x.id,x.name);db.session.commit();return {"id":x.id},201
 
     @app.patch("/api/platforms/<int:item_id>")
     def platforms_update(item_id):
@@ -1039,6 +1039,7 @@ def create_app():
         status=(request.get_json(silent=True) or {}).get("status")
         if status not in {"TO_PROCESS","IN_PROGRESS","COMPLETED"}:return {"error":"Statut invalide."},400
         x.status=status
+        audit(account,"MEMBER_REQUEST_STATUS_CHANGED","member_request",x.id,f"status={status}")
         if x.member_id!=account.member_id:notify(x.member_id,"REQUEST_STATUS","Mise à jour de votre demande",f"Votre demande est maintenant : {status.replace('_',' ').lower()}.","my-requests")
         db.session.commit();return member_request_payload(x)
 
@@ -1220,6 +1221,7 @@ def create_app():
         except ValueError:return {"error":"Dates invalides."},400
         rows=DutyAssignment.query.join(Meeting,DutyAssignment.meeting_id==Meeting.id).filter(Meeting.date>=start,Meeting.date<=end,DutyAssignment.status=="DRAFT").all()
         for a in rows:a.status="PUBLISHED"
+        audit(_, "DUTY_ASSIGNMENTS_PUBLISHED","duty_assignment",None,f"{start.isoformat()} to {end.isoformat()}; count={len(rows)}")
         db.session.commit();return {"status":"ok","published":len(rows)}
 
     @app.route("/api/meetings",methods=["GET","POST"])
@@ -1241,7 +1243,7 @@ def create_app():
                 try:start=datetime.strptime(data["startTime"],"%H:%M").time()
                 except ValueError:return {"error":"Heure invalide."},400
             m=Meeting(date=meeting_date,start_time=start,type=meeting_type,location=(data.get("location") or "").strip() or None,status=data.get("status","PLANNED"),notes=(data.get("notes") or "").strip() or None)
-            db.session.add(m);db.session.commit()
+            db.session.add(m);db.session.flush();audit(_, "MEETING_CREATED","meeting",m.id,f"date={meeting_date.isoformat()}; type={meeting_type}");db.session.commit()
             return meeting_payload(m),201
         rows=Meeting.query.order_by(Meeting.date).all()
         return jsonify([meeting_payload(m) for m in rows])
