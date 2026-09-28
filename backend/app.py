@@ -534,7 +534,21 @@ def create_app():
         if not account:return {"error":"Authentification requise."},401
         if account.is_system_admin:return jsonify([handover_payload(x) for x in HandoverItem.query.order_by(HandoverItem.id.desc()).all()])
         role_ids=current_role_ids(account)
-        return jsonify([handover_payload(x) for x in HandoverItem.query.filter(HandoverItem.role_id.in_(role_ids)).order_by(HandoverItem.id.desc()).all()]) if role_ids else jsonify([])
+        rows=HandoverItem.query.filter(HandoverItem.role_id.in_(role_ids)).order_by(HandoverItem.id.desc()).all() if role_ids else []
+        return jsonify([handover_payload(x) for x in rows])
+
+    @app.get("/api/me/handovers")
+    def my_handovers():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        rows=HandoverItem.query.order_by(HandoverItem.id.desc()).all()
+        out=[]
+        for x in rows:
+            outgoing=RoleAssignment.query.filter_by(mandate_id=x.from_mandate_id,role_id=x.role_id,member_id=account.member_id,status="ACTIVE").first()
+            incoming=RoleAssignment.query.filter_by(mandate_id=x.to_mandate_id,role_id=x.role_id,member_id=account.member_id,status="ACTIVE").first()
+            if outgoing or incoming:
+                p=handover_payload(x);p["mySide"]="outgoing" if outgoing else "incoming";out.append(p)
+        return jsonify(out)
 
     @app.post("/api/handovers")
     def handovers_create():
