@@ -466,6 +466,39 @@ def create_app():
                 "committee":[{"assignmentId":a.id,"roleId":a.role_id,"role":roles[a.role_id].name if a.role_id in roles else "—","memberId":a.member_id,
                 "member":f"{members[a.member_id].first_name} {members[a.member_id].last_name}" if a.member_id in members else "—"} for a in assignments]}
 
+    def require_alumni_access():
+        account,_=bearer_account()
+        if not account:return None,({"error":"Authentification requise."},401)
+        if account.is_system_admin:return account,None
+        today=date.today()
+        mandate=Mandate.query.filter(Mandate.start_date<=today,Mandate.end_date>=today).order_by(Mandate.start_date.desc()).first()
+        if not mandate:return account,({"error":"Aucune mandature active."},403)
+        allowed=["président","president","vice-président","vice president","vice-president","secrétaire trésorier","secretaire tresorier","secrétaire-trésorier","secretaire-tresorier"]
+        assignments=RoleAssignment.query.filter_by(mandate_id=mandate.id,member_id=account.member_id,status="ACTIVE").all()
+        roles=[db.session.get(Role,x.role_id) for x in assignments]
+        if any(r and r.name.lower().strip() in allowed for r in roles):return account,None
+        return account,({"error":"Accès réservé au Board de la mandature active."},403)
+
+    @app.get("/api/alumni")
+    def alumni_list():
+        _,err=require_alumni_access()
+        if err:return err
+        rows=db.session.query(Member,Membership).join(Membership,Membership.member_id==Member.id).filter(Membership.status.in_(["FORMER","ALUMNI"])).order_by(Member.last_name,Member.first_name).all()
+        return jsonify([{"memberId":m.id,"firstName":m.first_name,"lastName":m.last_name,"company":m.company,"activity":m.activity,"email":m.email,"phone":m.phone,"startDate":ms.start_date.isoformat() if ms.start_date else None,"endDate":ms.end_date.isoformat() if ms.end_date else None} for m,ms in rows])
+
+    @app.get("/api/alumni/export")
+    def alumni_export():
+        _,err=require_alumni_access()
+        if err:return err
+        from io import BytesIO
+        from openpyxl import Workbook
+        wb=Workbook();ws=wb.active;ws.title="BNI Alumni"
+        ws.append(["Prénom","Nom","Société","Activité","Email","Téléphone","Date entrée","Date sortie"])
+        rows=db.session.query(Member,Membership).join(Membership,Membership.member_id==Member.id).filter(Membership.status.in_(["FORMER","ALUMNI"])).order_by(Member.last_name,Member.first_name).all()
+        for m,ms in rows:ws.append([m.first_name,m.last_name,m.company,m.activity,m.email,m.phone,ms.start_date,ms.end_date])
+        out=BytesIO();wb.save(out);out.seek(0)
+        return send_file(out,as_attachment=True,download_name="BNI_Soignies_Alumni.xlsx",mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
     ONBOARDING_DEFAULTS=[
         ("OBSERVE_SETUP","Observer la préparation de salle"),
         ("OBSERVE_RECEPTION","Observer l'accueil des invités"),
