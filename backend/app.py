@@ -99,6 +99,15 @@ class DutyAssignment(db.Model):
     status=db.Column(db.String(30),nullable=False,default="DRAFT")
     created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
 
+class SwapRequest(db.Model):
+    __tablename__="swap_requests"
+    id=db.Column(db.Integer,primary_key=True)
+    assignment_id=db.Column(db.Integer,db.ForeignKey("duty_assignments.id"),nullable=False,index=True)
+    requester_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    volunteer_id=db.Column(db.Integer,db.ForeignKey("members.id"),index=True)
+    status=db.Column(db.String(30),nullable=False,default="OPEN")
+    created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
+
 class Meeting(db.Model):
     __tablename__="meetings"
     id=db.Column(db.Integer,primary_key=True)
@@ -492,8 +501,10 @@ def create_app():
         a=db.session.get(DutyAssignment,assignment_id)
         if not a or a.member_id!=account.member_id:return {"error":"Affectation introuvable."},404
         if a.status!="PUBLISHED":return {"error":"Cette permanence n'est pas publiée."},400
-        a.status="TO_REASSIGN";db.session.commit()
-        return {"status":"TO_REASSIGN","message":"Indisponibilité enregistrée. Le responsable peut maintenant réattribuer cette permanence."}
+        a.status="TO_REASSIGN";existing=SwapRequest.query.filter_by(assignment_id=a.id,status="OPEN").first()
+        if not existing:db.session.add(SwapRequest(assignment_id=a.id,requester_id=account.member_id,status="OPEN"))
+        db.session.commit()
+        return {"status":"TO_REASSIGN","message":"Indisponibilité enregistrée. Les autres membres peuvent proposer de reprendre cette permanence."}
 
     @app.get("/api/me/profile")
     def my_profile():
@@ -501,6 +512,29 @@ def create_app():
         if not account:return {"error":"Authentification requise."},401
         m=account.member
         return {"id":m.id,"firstName":m.first_name,"lastName":m.last_name,"company":m.company,"activity":m.activity,"email":account.email,"phone":m.phone,"roles":account_payload(account)["roles"]}
+
+    def swap_payload(x):
+        a=db.session.get(DutyAssignment,x.assignment_id);meeting=db.session.get(Meeting,a.meeting_id) if a else None;duty=db.session.get(Duty,a.duty_id) if a else None;requester=db.session.get(Member,x.requester_id);volunteer=db.session.get(Member,x.volunteer_id) if x.volunteer_id else None
+        return {"id":x.id,"assignmentId":x.assignment_id,"date":meeting.date.isoformat() if meeting else None,"duty":duty.name if duty else "—","requester":f"{requester.first_name} {requester.last_name}" if requester else "—","volunteer":f"{volunteer.first_name} {volunteer.last_name}" if volunteer else None,"status":x.status}
+
+    @app.get("/api/swaps/open")
+    def open_swaps():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        rows=SwapRequest.query.filter_by(status="OPEN").order_by(SwapRequest.created_at).all()
+        return jsonify([swap_payload(x) for x in rows if x.requester_id!=account.member_id])
+
+    @app.post("/api/swaps/<int:swap_id>/volunteer")
+    def volunteer_swap(swap_id):
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        x=db.session.get(SwapRequest,swap_id)
+        if not x or x.status!="OPEN":return {"error":"Cette demande n'est plus disponible."},404
+        if x.requester_id==account.member_id:return {"error":"Vous ne pouvez pas reprendre votre propre permanence."},400
+        a=db.session.get(DutyAssignment,x.assignment_id)
+        if DutyAssignment.query.filter(DutyAssignment.meeting_id==a.meeting_id,DutyAssignment.member_id==account.member_id,DutyAssignment.id!=a.id).first():return {"error":"Vous avez déjà une fonction lors de cette réunion."},409
+        x.volunteer_id=account.member_id;x.status="ACCEPTED";a.member_id=account.member_id;a.status="PUBLISHED";db.session.commit()
+        return swap_payload(x)
 
     @app.patch("/api/duty-assignments/<int:assignment_id>")
     def update_duty_assignment(assignment_id):
