@@ -568,6 +568,15 @@ def create_app():
         if status not in {"TO_PROCESS","IN_PROGRESS","COMPLETED"}:return {"error":"Statut invalide."},400
         x.status=status;db.session.commit();return member_request_payload(x)
 
+    @app.get("/api/me/requests/summary")
+    def my_requests_summary():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        rows=MemberRequest.query.filter_by(member_id=account.member_id).order_by(MemberRequest.created_at.desc()).all()
+        counts={"TO_PROCESS":0,"IN_PROGRESS":0,"COMPLETED":0}
+        for x in rows:counts[x.status]=counts.get(x.status,0)+1
+        return {"total":len(rows),"counts":counts,"recent":[member_request_payload(x) for x in rows[:5]]}
+
     @app.get("/api/me/request-inbox")
     def my_request_inbox():
         account,_=bearer_account()
@@ -579,7 +588,7 @@ def create_app():
     def my_duty_assignments():
         account,_=bearer_account()
         if not account:return {"error":"Authentification requise."},401
-        rows=DutyAssignment.query.join(Meeting,DutyAssignment.meeting_id==Meeting.id).filter(DutyAssignment.member_id==account.member_id,DutyAssignment.status=="PUBLISHED").order_by(Meeting.date).all()
+        rows=DutyAssignment.query.join(Meeting,DutyAssignment.meeting_id==Meeting.id).filter(DutyAssignment.member_id==account.member_id,DutyAssignment.status.in_(["PUBLISHED","TO_REASSIGN"])).order_by(Meeting.date).all()
         return jsonify([assignment_payload(a) for a in rows])
 
     @app.post("/api/me/duty-assignments/<int:assignment_id>/unavailable")
