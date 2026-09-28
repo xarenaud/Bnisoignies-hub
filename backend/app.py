@@ -478,6 +478,44 @@ def create_app():
         rows=DutyAssignment.query.join(Meeting,DutyAssignment.meeting_id==Meeting.id).order_by(Meeting.date,DutyAssignment.duty_id).all()
         return jsonify([assignment_payload(a) for a in rows])
 
+    @app.patch("/api/duty-assignments/<int:assignment_id>")
+    def update_duty_assignment(assignment_id):
+        _,auth_error=require_admin()
+        if auth_error:return auth_error
+        a=db.session.get(DutyAssignment,assignment_id)
+        if not a:return {"error":"Affectation introuvable."},404
+        data=request.get_json(silent=True) or {}
+        if "memberId" in data:
+            try:member_id=int(data["memberId"])
+            except (TypeError,ValueError):return {"error":"Membre invalide."},400
+            member=db.session.get(Member,member_id)
+            if not member:return {"error":"Membre introuvable."},404
+            meeting=db.session.get(Meeting,a.meeting_id)
+            ms=Membership.query.filter_by(member_id=member_id).order_by(Membership.id.desc()).first()
+            if not ms or ms.status!="ACTIVE" or (ms.start_date and ms.start_date>meeting.date) or (ms.end_date and ms.end_date<meeting.date):return {"error":"Membre non actif à cette date."},400
+            if DutyAssignment.query.filter(DutyAssignment.meeting_id==a.meeting_id,DutyAssignment.member_id==member_id,DutyAssignment.id!=a.id).first():return {"error":"Ce membre a déjà une fonction ce jour-là."},409
+            a.member_id=member_id
+        db.session.commit();return assignment_payload(a)
+
+    @app.post("/api/duty-assignments/<int:assignment_id>/reassign")
+    def reassign_duty_assignment(assignment_id):
+        _,auth_error=require_admin()
+        if auth_error:return auth_error
+        a=db.session.get(DutyAssignment,assignment_id)
+        if not a:return {"error":"Affectation introuvable."},404
+        meeting=db.session.get(Meeting,a.meeting_id);duty=db.session.get(Duty,a.duty_id)
+        occupied={x.member_id for x in DutyAssignment.query.filter_by(meeting_id=meeting.id).all() if x.id!=a.id}
+        candidates=[]
+        for m in Member.query.order_by(Member.last_name,Member.first_name).all():
+            ms=Membership.query.filter_by(member_id=m.id).order_by(Membership.id.desc()).first()
+            if ms and ms.status=="ACTIVE" and m.id not in occupied and (not ms.start_date or ms.start_date<=meeting.date) and (not ms.end_date or ms.end_date>=meeting.date):candidates.append(m)
+        if not candidates:return {"error":"Aucun membre disponible."},400
+        def score(m):
+            total=DutyAssignment.query.filter_by(member_id=m.id).count()
+            specific=DutyAssignment.query.filter_by(member_id=m.id,duty_id=duty.id).count()
+            return (total,specific,m.last_name.lower(),m.first_name.lower())
+        candidates.sort(key=score);a.member_id=candidates[0].id;db.session.commit();return assignment_payload(a)
+
     @app.post("/api/duty-assignments/generate")
     def generate_duty_assignments():
         _,auth_error=require_admin()
