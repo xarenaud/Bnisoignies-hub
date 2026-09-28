@@ -687,7 +687,7 @@ def create_app():
         if err:return err
         x=db.session.get(Resource,item_id)
         if not x:return {"error":"Ressource introuvable."},404
-        x.active=False;db.session.commit();return {"status":"archived"}
+        x.active=False;audit(_, "RESOURCE_ARCHIVED","resource",x.id,x.title);db.session.commit();return {"status":"archived"}
 
     @app.get("/api/platforms")
     def platforms_list():
@@ -717,7 +717,7 @@ def create_app():
         if "ownerRoleId" in d:x.owner_role_id=d.get("ownerRoleId") or None
         if "boardOnly" in d:x.board_only=bool(d["boardOnly"])
         if "active" in d:x.active=bool(d["active"])
-        db.session.commit();return {"status":"ok"}
+        audit(_, "PLATFORM_UPDATED","platform",x.id,x.name);db.session.commit();return {"status":"ok"}
 
     @app.delete("/api/platforms/<int:item_id>")
     def platforms_delete(item_id):
@@ -725,7 +725,7 @@ def create_app():
         if err:return err
         x=db.session.get(Platform,item_id)
         if not x:return {"error":"Plateforme introuvable."},404
-        x.active=False;db.session.commit();return {"status":"archived"}
+        x.active=False;audit(_, "PLATFORM_ARCHIVED","platform",x.id,x.name);db.session.commit();return {"status":"archived"}
 
     def require_alumni_access():
         account,_=bearer_account()
@@ -828,6 +828,7 @@ def create_app():
         membership=Membership.query.filter_by(member_id=member_id).order_by(Membership.id.desc()).first()
         membership.status="ACTIVE"
         if mentorship:mentorship.status="COMPLETED";mentorship.completed_at=date.today()
+        audit(account,"ONBOARDING_COMPLETED","member",member_id)
         notify(member_id,"ONBOARDING_COMPLETE","Intégration terminée","Votre mentor a validé votre intégration. Vous êtes maintenant membre autonome.","profile")
         db.session.commit();return onboarding_payload(member_id)
 
@@ -1163,7 +1164,7 @@ def create_app():
         candidates.sort(key=score);previous=a.member_id;a.member_id=candidates[0].id
         SwapRequest.query.filter_by(assignment_id=a.id,status="OPEN").update({"status":"CANCELLED"})
         notify(previous,"DUTY_CHANGED","Permanence réattribuée",f"Votre permanence du {meeting.date.strftime('%d/%m/%Y')} a été réattribuée.","duties")
-        notify(a.member_id,"DUTY_ASSIGNED","Nouvelle permanence",f"Une permanence vous a été attribuée le {meeting.date.strftime('%d/%m/%Y')}.","duties")
+        notify(a.member_id,"DUTY_ASSIGNED","Nouvelle permanence",f"Une permanence vous a été attribuée le {meeting.date.strftime('%d/%m/%Y')}.","duties")\n        audit(_, "DUTY_REASSIGNED","duty_assignment",a.id,f"from={previous}; to={a.member_id}")
         db.session.commit();return assignment_payload(a)
 
     @app.get("/api/planning/welcome")
@@ -1255,7 +1256,7 @@ def create_app():
         m=db.session.get(Meeting,meeting_id)
         if not m:return {"error":"Réunion introuvable."},404
         if request.method=="DELETE":
-            db.session.delete(m);db.session.commit();return {"status":"ok"}
+            audit(_, "MEETING_DELETED","meeting",m.id,f"date={m.date.isoformat()}");db.session.delete(m);db.session.commit();return {"status":"ok"}
         data=request.get_json(silent=True) or {}
         if "date" in data:
             try:m.date=date.fromisoformat(data["date"])
@@ -1267,7 +1268,7 @@ def create_app():
         if "startTime" in data:
             try:m.start_time=datetime.strptime(data["startTime"],"%H:%M").time() if data["startTime"] else None
             except ValueError:return {"error":"Heure invalide."},400
-        db.session.commit();return meeting_payload(m)
+        audit(_, "MEETING_UPDATED","meeting",m.id,f"date={m.date.isoformat()}; type={m.type}");db.session.commit();return meeting_payload(m)
 
     @app.post("/api/meetings/generate-thursdays")
     def generate_thursdays():
