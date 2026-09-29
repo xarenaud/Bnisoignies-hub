@@ -430,8 +430,37 @@ def create_app():
         account.invitation_expires_at=datetime.utcnow()+timedelta(hours=48)
         if not account.id: db.session.add(account)
         db.session.commit()
-        base=os.getenv("APP_URL","https://cx-labs.be/Bnisoignies-hub/").rstrip("/")
-        return {"status":"INVITED","activationUrl":f"{base}/?activate={account.invitation_token}","expiresInHours":48}
+        base=os.getenv("APP_URL","https://hub.bim-soignies.be").rstrip("/")
+        activation_url=f"{base}/?activate={account.invitation_token}"
+        email_sent=False
+        host=os.getenv("SMTP_HOST","").strip();sender=os.getenv("SMTP_FROM","").strip()
+        if host and sender:
+            msg=EmailMessage()
+            msg["Subject"]="BNI Soignies Hub — votre invitation"
+            msg["From"]=sender;msg["To"]=member.email
+            msg.set_content(f"""Bonjour {member.first_name},
+
+Vous êtes invité(e) à découvrir BNI Soignies Hub.
+
+Xavier vous propose de tester l'application et de lui remonter vos remarques, idées ou éventuels problèmes rencontrés.
+
+Activez votre accès avec ce lien (valable 48 heures) :
+{activation_url}
+
+À bientôt sur BNI Soignies Hub.""")
+            port=int(os.getenv("SMTP_PORT","587"));user=os.getenv("SMTP_USER","").strip();password=os.getenv("SMTP_PASSWORD","")
+            use_ssl=os.getenv("SMTP_SSL","false").lower() in {"1","true","yes"}
+            smtp=(smtplib.SMTP_SSL(host,port,timeout=15) if use_ssl else smtplib.SMTP(host,port,timeout=15))
+            try:
+                if not use_ssl and os.getenv("SMTP_STARTTLS","true").lower() in {"1","true","yes"}:smtp.starttls()
+                if user:smtp.login(user,password)
+                smtp.send_message(msg);email_sent=True
+            except Exception as exc:
+                app.logger.exception("Invitation email delivery failed for member %s: %s",member.id,exc)
+            finally:
+                try:smtp.quit()
+                except Exception:pass
+        return {"status":"INVITED","activationUrl":activation_url,"expiresInHours":48,"emailSent":email_sent}
 
     @app.post("/api/auth/activate")
     def activate():
