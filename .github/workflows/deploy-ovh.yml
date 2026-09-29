@@ -66,6 +66,7 @@ jobs:
               pwd;
               cd bni_hub;
               pwd;
+              cls -l test.txt;
               mirror -R --delete --verbose --parallel=2 dist/ ./;
               chmod 755 .;
               chmod 644 index.html;
@@ -83,6 +84,7 @@ jobs:
               pwd;
               cd bni_hub;
               pwd;
+              cls -l test.txt;
               mirror -R --delete --verbose --parallel=2 dist/ ./;
               chmod 755 .;
               chmod 644 index.html;
