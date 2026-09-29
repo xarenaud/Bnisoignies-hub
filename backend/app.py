@@ -1012,6 +1012,17 @@ def create_app():
         sender=os.getenv("SMTP_FROM","").strip()
         if not host or not sender:return False
         recipients=list(dict.fromkeys([t.get("email") for t in targets if t.get("email")]))
+        # Safety net: never silently drop an email when a request has no routed
+        # responsible member (or the responsible member has no email yet).
+        # The Hub keeps the request internally and sends it to the configured
+        # fallback/admin mailbox so it can still be handled.
+        if not recipients:
+            fallback=(os.getenv("REQUEST_FALLBACK_EMAIL","").strip()
+                      or os.getenv("SYSTEM_ADMIN_EMAIL","").strip()
+                      or sender)
+            if fallback:
+                recipients=[fallback]
+                app.logger.warning("Member request %s (%s) has no emailed assignee; using fallback recipient.",x.id,x.type)
         if not recipients:return False
         msg=EmailMessage()
         labels={"INFOMERCIAL":"Infomercial","COMMUNICATION":"Communication","TRAINING":"Formation","MENTORING":"Mentorat","EVENT":"Événement","INVITATION":"Invitation"}
