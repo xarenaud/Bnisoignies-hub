@@ -1,4 +1,4 @@
-import React,{useEffect,useState}from'react';import{createRoot}from'react-dom/client';import{Home,CalendarDays,PlusCircle,BookOpen,UserRound,MapPin,Clock,Users,ArrowRight,Shield,Handshake,Mic2,Megaphone,GraduationCap,PartyPopper,Upload,Download,UserPlus,BriefcaseBusiness,Database,ChevronLeft,CheckCircle2,AlertTriangle,Bell}from'lucide-react';import'./style.css';
+import React,{useEffect,useState}from'react';import{createRoot}from'react-dom/client';import{Home,CalendarDays,PlusCircle,BookOpen,UserRound,MapPin,Clock,Users,ArrowRight,Shield,Handshake,Mic2,Megaphone,GraduationCap,PartyPopper,Upload,Download,UserPlus,BriefcaseBusiness,Database,ChevronLeft,CheckCircle2,AlertTriangle,Bell,RefreshCw}from'lucide-react';import'./style.css';
 
 const meetings=[
 {date:'Jeu. 1 oct.',title:'Réunion hebdomadaire',type:'Régulière',place:'Soignies',time:'06:45',duty:'Accueil invités'},
