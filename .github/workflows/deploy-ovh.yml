@@ -51,6 +51,8 @@ jobs:
           test -n "$OVH_PASSWORD"
           test -n "$OVH_PORT"
 
+          # OVH FTP lands directly in the hosting FTP root.
+          # FileZilla confirms /bni_hub is the multisite document root.
           if [ "$OVH_PORT" = "21" ]; then
             lftp -c "
               set cmd:fail-exit yes;
@@ -61,7 +63,9 @@ jobs:
               set net:max-retries 2;
               set net:timeout 20;
               open -u '$OVH_USERNAME','$OVH_PASSWORD' ftp://$OVH_HOST:$OVH_PORT;
-              cd /bni_hub;
+              pwd;
+              cd bni_hub;
+              pwd;
               mirror -R --delete --verbose --parallel=2 dist/ ./;
               chmod 755 .;
               chmod 644 index.html;
@@ -76,7 +80,9 @@ jobs:
               set net:max-retries 2;
               set net:timeout 20;
               open -u '$OVH_USERNAME','$OVH_PASSWORD' sftp://$OVH_HOST:$OVH_PORT;
-              cd /bni_hub;
+              pwd;
+              cd bni_hub;
+              pwd;
               mirror -R --delete --verbose --parallel=2 dist/ ./;
               chmod 755 .;
               chmod 644 index.html;
@@ -88,4 +94,4 @@ jobs:
 
           test -s /tmp/bni-index.html
           grep -q './assets/' /tmp/bni-index.html
-          echo "OVH deployment verified in the existing /bni_hub directory."
+          echo "OVH deployment verified in bni_hub."
