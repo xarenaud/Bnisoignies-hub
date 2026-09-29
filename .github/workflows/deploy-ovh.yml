@@ -17,36 +17,75 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
+
       - name: Install dependencies
         run: npm install
+
       - name: Build
         run: npm run build
+
       - name: Verify build
         run: |
           test -f dist/index.html
+          test -d dist/assets
           grep -q './assets/' dist/index.html
+
       - name: Install LFTP
         run: sudo apt-get update && sudo apt-get install -y lftp
-      - name: Deploy and verify OVH /bni_hub
+
+      - name: Deploy and verify OVH
         env:
           OVH_HOST: ${{ secrets.OVH_HOST }}
           OVH_USERNAME: ${{ secrets.OVH_USERNAME }}
           OVH_PASSWORD: ${{ secrets.OVH_PASSWORD }}
           OVH_PORT: ${{ secrets.OVH_PORT }}
         run: |
+          set -euo pipefail
           test -n "$OVH_HOST"
           test -n "$OVH_USERNAME"
           test -n "$OVH_PASSWORD"
           test -n "$OVH_PORT"
+
           if [ "$OVH_PORT" = "21" ]; then
-            lftp -c "set ftp:ssl-allow true; set ftp:ssl-force false; set ftp:ssl-protect-data true; set ssl:verify-certificate yes; set net:max-retries 2; set net:timeout 20; open -u '$OVH_USERNAME','$OVH_PASSWORD' ftp://$OVH_HOST:$OVH_PORT; mkdir -p /bni_hub; mirror -R --delete --verbose dist/ /bni_hub/; cd /bni_hub; cls -la; get index.html -o /tmp/bni-index.html; bye"
+            lftp -c "
+              set cmd:fail-exit yes;
+              set ftp:ssl-allow true;
+              set ftp:ssl-force false;
+              set ftp:ssl-protect-data true;
+              set ssl:verify-certificate yes;
+              set net:max-retries 2;
+              set net:timeout 20;
+              open -u '$OVH_USERNAME','$OVH_PASSWORD' ftp://$OVH_HOST:$OVH_PORT;
+              cd /bni_hub;
+              mirror -R --delete --verbose --parallel=2 dist/ ./;
+              chmod 755 .;
+              chmod 644 index.html;
+              cls -la;
+              get index.html -o /tmp/bni-index.html;
+              bye
+            "
           else
-            lftp -c "set sftp:auto-confirm yes; set net:max-retries 2; set net:timeout 20; open -u '$OVH_USERNAME','$OVH_PASSWORD' sftp://$OVH_HOST:$OVH_PORT; mkdir -p /bni_hub; mirror -R --delete --verbose dist/ /bni_hub/; cd /bni_hub; cls -la; get index.html -o /tmp/bni-index.html; bye"
+            lftp -c "
+              set cmd:fail-exit yes;
+              set sftp:auto-confirm yes;
+              set net:max-retries 2;
+              set net:timeout 20;
+              open -u '$OVH_USERNAME','$OVH_PASSWORD' sftp://$OVH_HOST:$OVH_PORT;
+              cd /bni_hub;
+              mirror -R --delete --verbose --parallel=2 dist/ ./;
+              chmod 755 .;
+              chmod 644 index.html;
+              cls -la;
+              get index.html -o /tmp/bni-index.html;
+              bye
+            "
           fi
+
           test -s /tmp/bni-index.html
           grep -q './assets/' /tmp/bni-index.html
-          echo "OVH deployment verified: /bni_hub/index.html exists and is readable."
+          echo "OVH deployment verified in the existing /bni_hub directory."
