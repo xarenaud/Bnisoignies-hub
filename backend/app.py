@@ -1164,7 +1164,8 @@ def create_app():
         candidates.sort(key=score);previous=a.member_id;a.member_id=candidates[0].id
         SwapRequest.query.filter_by(assignment_id=a.id,status="OPEN").update({"status":"CANCELLED"})
         notify(previous,"DUTY_CHANGED","Permanence réattribuée",f"Votre permanence du {meeting.date.strftime('%d/%m/%Y')} a été réattribuée.","duties")
-        notify(a.member_id,"DUTY_ASSIGNED","Nouvelle permanence",f"Une permanence vous a été attribuée le {meeting.date.strftime('%d/%m/%Y')}.","duties")\n        audit(_, "DUTY_REASSIGNED","duty_assignment",a.id,f"from={previous}; to={a.member_id}")
+        notify(a.member_id,"DUTY_ASSIGNED","Nouvelle permanence",f"Une permanence vous a été attribuée le {meeting.date.strftime('%d/%m/%Y')}.","duties")
+        audit(_, "DUTY_REASSIGNED","duty_assignment",a.id,f"from={previous}; to={a.member_id}")
         db.session.commit();return assignment_payload(a)
 
     @app.get("/api/planning/welcome")
