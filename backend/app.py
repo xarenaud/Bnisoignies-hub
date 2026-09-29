@@ -1,4 +1,5 @@
-import os, secrets, io
+import os, secrets, io, smtplib
+from email.message import EmailMessage
 from datetime import datetime, date, timedelta
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
@@ -187,6 +188,9 @@ class MemberRequest(db.Model):
     guest_name=db.Column(db.String(255))
     guest_email=db.Column(db.String(255))
     event_date=db.Column(db.Date)
+    attachment_name=db.Column(db.String(255))
+    attachment_type=db.Column(db.String(120))
+    attachment_data=db.Column(db.LargeBinary)
     status=db.Column(db.String(30),nullable=False,default="TO_PROCESS")
     created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
 
@@ -961,7 +965,7 @@ def create_app():
         rows=RoleAssignment.query.filter(RoleAssignment.mandate_id.in_([m.id for m in mandates]),RoleAssignment.role_id.in_(role_ids),RoleAssignment.status=="ACTIVE").all()
         members={m.id:m for m in Member.query.filter(Member.id.in_(list({a.member_id for a in rows}))).all()} if rows else {}
         rolemap={r.id:r.name for r in roles}
-        return [{"memberId":a.member_id,"member":f"{members[a.member_id].first_name} {members[a.member_id].last_name}","role":rolemap.get(a.role_id,"—")} for a in rows if a.member_id in members]
+        return [{"memberId":a.member_id,"member":f"{members[a.member_id].first_name} {members[a.member_id].last_name}","email":members[a.member_id].email,"role":rolemap.get(a.role_id,"—")} for a in rows if a.member_id in members]
 
     def can_manage_request(account,kind):
         if account.is_system_admin:return True
@@ -969,7 +973,7 @@ def create_app():
 
     def member_request_payload(x):
         m=db.session.get(Member,x.member_id);assignees=request_assignees(x.type,x.created_at.date() if x.created_at else None)
-        return {"id":x.id,"type":x.type,"title":x.title,"message":x.message,"guestName":x.guest_name,"guestEmail":x.guest_email,"eventDate":x.event_date.isoformat() if x.event_date else None,"status":x.status,"createdAt":x.created_at.isoformat(),"member":f"{m.first_name} {m.last_name}" if m else "—","assignees":assignees,"routingStatus":"ROUTED" if assignees else "UNASSIGNED"}
+        return {"id":x.id,"type":x.type,"title":x.title,"message":x.message,"guestName":x.guest_name,"guestEmail":x.guest_email,"eventDate":x.event_date.isoformat() if x.event_date else None,"status":x.status,"createdAt":x.created_at.isoformat(),"member":f"{m.first_name} {m.last_name}" if m else "—","assignees":[{k:v for k,v in t.items() if k!="email"} for t in assignees],"routingStatus":"ROUTED" if assignees else "UNASSIGNED","attachmentName":x.attachment_name,"hasAttachment":bool(x.attachment_data)}
 
     def notify(member_id,kind,title,message=None,link=None):
         n=Notification(member_id=member_id,type=kind,title=title,message=message,link=link)
@@ -1000,6 +1004,43 @@ def create_app():
         Notification.query.filter_by(member_id=account.member_id,read_at=None).update({"read_at":datetime.utcnow()})
         db.session.commit();return {"status":"ok"}
 
+    REQUEST_ALLOWED_EXTENSIONS={"pdf","png","jpg","jpeg","webp","ppt","pptx","mp4","mov","m4v"}
+    REQUEST_MAX_FILE_SIZE=5*1024*1024
+
+    def send_request_email(x,account,targets):
+        host=os.getenv("SMTP_HOST","").strip()
+        sender=os.getenv("SMTP_FROM","").strip()
+        if not host or not sender:return False
+        recipients=list(dict.fromkeys([t.get("email") for t in targets if t.get("email")]))
+        if not recipients:return False
+        msg=EmailMessage()
+        labels={"INFOMERCIAL":"Infomercial","COMMUNICATION":"Communication","TRAINING":"Formation","MENTORING":"Mentorat","EVENT":"Événement","INVITATION":"Invitation"}
+        member=account.member
+        msg["Subject"]=f"BNI Soignies Hub — nouvelle demande {labels.get(x.type,x.type)}"
+        msg["From"]=sender
+        msg["To"]=", ".join(recipients)
+        msg.set_content(f"""Nouvelle demande envoyée par {member.first_name} {member.last_name}.
+
+Type : {labels.get(x.type,x.type)}
+Sujet : {x.title or x.guest_name or "—"}
+Message :
+{x.message or "—"}
+
+Cette demande est également disponible dans BNI Soignies Hub.""")
+        if x.attachment_data:
+            maintype,subtype=(x.attachment_type or "application/octet-stream").split("/",1) if "/" in (x.attachment_type or "") else ("application","octet-stream")
+            msg.add_attachment(x.attachment_data,maintype=maintype,subtype=subtype,filename=x.attachment_name or "piece-jointe")
+        port=int(os.getenv("SMTP_PORT","587"))
+        user=os.getenv("SMTP_USER","").strip();password=os.getenv("SMTP_PASSWORD","")
+        use_ssl=os.getenv("SMTP_SSL","false").lower() in {"1","true","yes"}
+        smtp=(smtplib.SMTP_SSL(host,port,timeout=15) if use_ssl else smtplib.SMTP(host,port,timeout=15))
+        try:
+            if not use_ssl and os.getenv("SMTP_STARTTLS","true").lower() in {"1","true","yes"}:smtp.starttls()
+            if user:smtp.login(user,password)
+            smtp.send_message(msg)
+            return True
+        finally:smtp.quit()
+
     @app.route("/api/me/requests",methods=["GET","POST"])
     def my_requests():
         account,_=bearer_account()
@@ -1007,19 +1048,45 @@ def create_app():
         if request.method=="GET":
             rows=MemberRequest.query.filter_by(member_id=account.member_id).order_by(MemberRequest.created_at.desc()).all()
             return jsonify([member_request_payload(x) for x in rows])
-        data=request.get_json(silent=True) or {};kind=(data.get("type") or "").strip().upper()
+        data=request.form if request.content_type and request.content_type.startswith("multipart/form-data") else (request.get_json(silent=True) or {})
+        kind=(data.get("type") or "").strip().upper()
         allowed={"INFOMERCIAL","COMMUNICATION","TRAINING","MENTORING","EVENT","INVITATION"}
         if kind not in allowed:return {"error":"Type de demande invalide."},400
         event_date=None
         if data.get("eventDate"):
             try:event_date=date.fromisoformat(data["eventDate"])
             except ValueError:return {"error":"Date invalide."},400
-        x=MemberRequest(member_id=account.member_id,type=kind,title=(data.get("title") or "").strip() or None,message=(data.get("message") or "").strip() or None,guest_name=(data.get("guestName") or "").strip() or None,guest_email=(data.get("guestEmail") or "").strip() or None,event_date=event_date,status="TO_PROCESS")
+        upload=request.files.get("attachment")
+        attachment_name=attachment_type=None;attachment_data=None
+        if upload and upload.filename:
+            attachment_name=upload.filename
+            ext=attachment_name.rsplit(".",1)[-1].lower() if "." in attachment_name else ""
+            if ext not in REQUEST_ALLOWED_EXTENSIONS:return {"error":"Type de pièce jointe non autorisé. Utilisez une image, un PDF, un PowerPoint ou une mini-vidéo."},400
+            attachment_data=upload.read(REQUEST_MAX_FILE_SIZE+1)
+            if len(attachment_data)>REQUEST_MAX_FILE_SIZE:return {"error":"La pièce jointe dépasse 5 Mo."},413
+            attachment_type=upload.mimetype or "application/octet-stream"
+        x=MemberRequest(member_id=account.member_id,type=kind,title=(data.get("title") or "").strip() or None,message=(data.get("message") or "").strip() or None,guest_name=(data.get("guestName") or "").strip() or None,guest_email=(data.get("guestEmail") or "").strip() or None,event_date=event_date,attachment_name=attachment_name,attachment_type=attachment_type,attachment_data=attachment_data,status="TO_PROCESS")
         db.session.add(x);db.session.flush()
-        for target in request_assignees(kind):
+        targets=request_assignees(kind)
+        for target in targets:
             if target["memberId"]!=account.member_id:notify(target["memberId"],"NEW_REQUEST",f"Nouvelle demande : {kind.title()}",f"{account.member.first_name} {account.member.last_name} a envoyé une nouvelle demande.","requests")
+        audit(account,"MEMBER_REQUEST_CREATED","member_request",x.id,f"type={kind}; attachment={attachment_name or 'none'}")
         db.session.commit()
-        return member_request_payload(x),201
+        email_sent=False
+        try:email_sent=send_request_email(x,account,targets)
+        except Exception as exc:
+            app.logger.exception("Request email delivery failed: %s",exc)
+        payload=member_request_payload(x);payload["emailSent"]=email_sent
+        return payload,201
+
+    @app.get("/api/member-requests/<int:request_id>/attachment")
+    def member_request_attachment(request_id):
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        x=db.session.get(MemberRequest,request_id)
+        if not x or not x.attachment_data:return {"error":"Pièce jointe introuvable."},404
+        if not (account.is_system_admin or account.member_id==x.member_id or can_manage_request(account,x.type)):return {"error":"Accès refusé."},403
+        return send_file(io.BytesIO(x.attachment_data),mimetype=x.attachment_type or "application/octet-stream",download_name=x.attachment_name or "piece-jointe",as_attachment=True)
 
     @app.get("/api/member-requests")
     def all_member_requests():
@@ -1293,6 +1360,9 @@ def create_app():
         db.create_all()
         # Temporary lightweight migration until Alembic is introduced.
         db.session.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS is_system_admin BOOLEAN NOT NULL DEFAULT FALSE"))
+        db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_name VARCHAR(255)"))
+        db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_type VARCHAR(120)"))
+        db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_data BYTEA"))
         db.session.commit()
         for code,name in [("SETUP","Préparation"),("RECEPTION","Accueil des invités"),("FOLLOWUP","Suivi des invités")]:
             duty=Duty.query.filter_by(code=code).first()
