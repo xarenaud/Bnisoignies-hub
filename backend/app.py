@@ -178,6 +178,13 @@ class Notification(db.Model):
     read_at=db.Column(db.DateTime)
     created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False,index=True)
 
+class RequestRecipient(db.Model):
+    __tablename__="request_recipients"
+    id=db.Column(db.Integer,primary_key=True)
+    request_type=db.Column(db.String(40),nullable=False,index=True)
+    member_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
+
 class MemberRequest(db.Model):
     __tablename__="member_requests"
     id=db.Column(db.Integer,primary_key=True)
@@ -955,6 +962,12 @@ def create_app():
     }
 
     def request_assignees(kind,when=None):
+        # Explicit admin routing takes priority over mandate-based automatic routing.
+        configured=RequestRecipient.query.filter_by(request_type=kind).order_by(RequestRecipient.id).all()
+        if configured:
+            mids=list(dict.fromkeys([x.member_id for x in configured]))
+            members={m.id:m for m in Member.query.filter(Member.id.in_(mids)).all()}
+            return [{"memberId":mid,"member":f"{members[mid].first_name} {members[mid].last_name}","email":members[mid].email,"role":"Destinataire configuré"} for mid in mids if mid in members]
         when=when or date.today()
         mandates=Mandate.query.filter(Mandate.start_date<=when,Mandate.end_date>=when).all()
         if not mandates:return []
@@ -1098,6 +1111,32 @@ Cette demande est également disponible dans BNI Soignies Hub.""")
         if not x or not x.attachment_data:return {"error":"Pièce jointe introuvable."},404
         if not (account.is_system_admin or account.member_id==x.member_id or can_manage_request(account,x.type)):return {"error":"Accès refusé."},403
         return send_file(io.BytesIO(x.attachment_data),mimetype=x.attachment_type or "application/octet-stream",download_name=x.attachment_name or "piece-jointe",as_attachment=True)
+
+    @app.route("/api/request-recipients",methods=["GET","PUT"])
+    def request_recipients_config():
+        account,err=require_admin()
+        if err:return err
+        allowed={"INFOMERCIAL","COMMUNICATION","TRAINING","MENTORING","EVENT","INVITATION"}
+        if request.method=="GET":
+            out={}
+            for kind in allowed:
+                configured=RequestRecipient.query.filter_by(request_type=kind).order_by(RequestRecipient.id).all()
+                out[kind]=[x.member_id for x in configured]
+            return jsonify(out)
+        data=request.get_json(silent=True) or {}
+        kind=(data.get("type") or "").strip().upper()
+        if kind not in allowed:return {"error":"Type de demande invalide."},400
+        raw=data.get("memberIds") or []
+        try:mids=list(dict.fromkeys([int(x) for x in raw]))
+        except (TypeError,ValueError):return {"error":"Liste de membres invalide."},400
+        if mids:
+            valid={m.id for m in Member.query.filter(Member.id.in_(mids)).all()}
+            if len(valid)!=len(mids):return {"error":"Un ou plusieurs membres sont introuvables."},400
+        RequestRecipient.query.filter_by(request_type=kind).delete()
+        for mid in mids:db.session.add(RequestRecipient(request_type=kind,member_id=mid))
+        audit(account,"REQUEST_RECIPIENTS_CHANGED","request_routing",kind,f"memberIds={mids}")
+        db.session.commit()
+        return {"type":kind,"memberIds":mids,"assignees":[{k:v for k,v in x.items() if k!="email"} for x in request_assignees(kind)]}
 
     @app.get("/api/member-requests")
     def all_member_requests():
