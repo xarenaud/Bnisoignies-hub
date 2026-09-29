@@ -1447,6 +1447,25 @@ Cette demande est également disponible dans BNI Soignies Hub.""")
             duty=Duty.query.filter_by(code=code).first()
             if not duty:db.session.add(Duty(code=code,name=name,active=True))
         db.session.commit()
+        # One-off launch rotation for the Hub presentation on Thursday 1 October 2026.
+        # This is intentionally an exception: it seeds Amélie + Simon + Xavier once,
+        # without changing the normal rotation algorithm for future meetings.
+        launch_date=date(2026,10,1)
+        launch_meeting=Meeting.query.filter_by(date=launch_date).first()
+        if not launch_meeting:
+            launch_meeting=Meeting(date=launch_date,start_time=datetime.strptime("07:00","%H:%M").time(),type="REGULAR",status="PLANNED",notes="Présentation BNI Soignies Hub — rotation de lancement exceptionnelle")
+            db.session.add(launch_meeting);db.session.flush()
+        launch_people=[]
+        for first in ["Amélie","Simon","Xavier"]:
+            person=Member.query.filter(db.func.lower(Member.first_name)==first.lower()).order_by(Member.id).first()
+            if person:launch_people.append(person)
+        launch_duties=Duty.query.filter_by(active=True).order_by(Duty.id).limit(3).all()
+        if len(launch_people)==3 and len(launch_duties)==3:
+            for duty,person in zip(launch_duties,launch_people):
+                exists=DutyAssignment.query.filter_by(meeting_id=launch_meeting.id,duty_id=duty.id).first()
+                if not exists:db.session.add(DutyAssignment(meeting_id=launch_meeting.id,duty_id=duty.id,member_id=person.id,status="PUBLISHED"))
+            db.session.commit()
+
         # Idempotent bootstrap of the first system administrator.
         admin_email=os.getenv("SYSTEM_ADMIN_EMAIL","").strip().lower()
         if admin_email:
