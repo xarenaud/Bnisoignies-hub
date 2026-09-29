@@ -47,7 +47,7 @@ jobs:
           test -n "$OVH_PATH"
           test -n "$OVH_PATH_BIM"
           if [ "$OVH_PORT" = "21" ]; then
-            lftp -c "set ftp:ssl-allow true; set ftp:ssl-force false; set ftp:ssl-protect-data true; set ssl:verify-certificate yes; set net:max-retries 2; set net:timeout 20; open -u '$OVH_USERNAME','$OVH_PASSWORD' ftp://$OVH_HOST:$OVH_PORT; mirror -R --verbose dist/ '$OVH_PATH'; mirror -R --verbose dist/ '$OVH_PATH_BIM'; bye"
+            lftp -c "set ftp:ssl-allow true; set ftp:ssl-force false; set ftp:ssl-protect-data true; set ssl:verify-certificate yes; set net:max-retries 2; set net:timeout 20; open -u '$OVH_USERNAME','$OVH_PASSWORD' ftp://$OVH_HOST:$OVH_PORT; mirror -R --verbose dist/ '$OVH_PATH'; cd '$OVH_PATH_BIM'; mirror -R --verbose $GITHUB_WORKSPACE/dist/ .; cls -l; bye"
           else
-            lftp -c "set sftp:auto-confirm yes; set net:max-retries 2; set net:timeout 20; open -u '$OVH_USERNAME','$OVH_PASSWORD' sftp://$OVH_HOST:$OVH_PORT; mirror -R --verbose dist/ '$OVH_PATH'; mirror -R --verbose dist/ '$OVH_PATH_BIM'; bye"
+            lftp -c "set sftp:auto-confirm yes; set net:max-retries 2; set net:timeout 20; open -u '$OVH_USERNAME','$OVH_PASSWORD' sftp://$OVH_HOST:$OVH_PORT; mirror -R --verbose dist/ '$OVH_PATH'; cd '$OVH_PATH_BIM'; mirror -R --verbose $GITHUB_WORKSPACE/dist/ .; cls -l; bye"
           fi
