@@ -1237,6 +1237,34 @@ Cette demande est également disponible dans BNI Soignies Hub.""")
         m=account.member
         return {"id":m.id,"firstName":m.first_name,"lastName":m.last_name,"company":m.company,"activity":m.activity,"email":account.email,"phone":m.phone,"roles":account_payload(account)["roles"]}
 
+    @app.route("/api/me/profile",methods=["PATCH"])
+    def update_my_profile():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        data=request.get_json(silent=True) or {}
+        m=account.member
+        if "firstName" in data:m.first_name=(data["firstName"] or "").strip()
+        if "lastName" in data:m.last_name=(data["lastName"] or "").strip()
+        if not m.first_name or not m.last_name:return {"error":"Le prénom et le nom sont obligatoires."},400
+        if "company" in data:m.company=(data["company"] or "").strip() or None
+        if "activity" in data:m.activity=(data["activity"] or "").strip() or None
+        if "phone" in data:m.phone=(data["phone"] or "").strip() or None
+        if "email" in data:
+            email=(data["email"] or "").strip().lower()
+            if not email:return {"error":"L'adresse e-mail est obligatoire."},400
+            other=UserAccount.query.filter(UserAccount.email==email,UserAccount.id!=account.id).first()
+            if other:return {"error":"Cette adresse e-mail est déjà utilisée."},409
+            account.email=email;m.email=email
+        new_password=data.get("newPassword") or ""
+        if new_password:
+            if len(new_password)<10:return {"error":"Le nouveau mot de passe doit contenir au moins 10 caractères."},400
+            current=data.get("currentPassword") or ""
+            if not account.password_hash or not check_password_hash(account.password_hash,current):return {"error":"Mot de passe actuel incorrect."},403
+            account.password_hash=generate_password_hash(new_password)
+        audit(account,"MEMBER_PROFILE_UPDATED","member",m.id,"self-service profile update")
+        db.session.commit()
+        return {"status":"ok","profile":{"id":m.id,"firstName":m.first_name,"lastName":m.last_name,"company":m.company,"activity":m.activity,"email":account.email,"phone":m.phone,"roles":account_payload(account)["roles"]}}
+
     def swap_payload(x):
         a=db.session.get(DutyAssignment,x.assignment_id);meeting=db.session.get(Meeting,a.meeting_id) if a else None;duty=db.session.get(Duty,a.duty_id) if a else None;requester=db.session.get(Member,x.requester_id);volunteer=db.session.get(Member,x.volunteer_id) if x.volunteer_id else None
         return {"id":x.id,"assignmentId":x.assignment_id,"date":meeting.date.isoformat() if meeting else None,"duty":duty.name if duty else "—","requester":f"{requester.first_name} {requester.last_name}" if requester else "—","volunteer":f"{volunteer.first_name} {volunteer.last_name}" if volunteer else None,"status":x.status}
