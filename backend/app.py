@@ -7,6 +7,7 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import text
 from werkzeug.security import generate_password_hash, check_password_hash
 from openpyxl import load_workbook, Workbook
+from cryptography.fernet import Fernet, InvalidToken
 
 db=SQLAlchemy()
 
@@ -100,6 +101,18 @@ class Platform(db.Model):
     board_only=db.Column(db.Boolean,nullable=False,default=False)
     renewal_info=db.Column(db.String(255))
     active=db.Column(db.Boolean,nullable=False,default=True)
+
+class VaultEntry(db.Model):
+    __tablename__="vault_entries"
+    id=db.Column(db.Integer,primary_key=True)
+    name=db.Column(db.String(180),nullable=False)
+    url=db.Column(db.Text)
+    username_encrypted=db.Column(db.LargeBinary)
+    password_encrypted=db.Column(db.LargeBinary)
+    notes_encrypted=db.Column(db.LargeBinary)
+    active=db.Column(db.Boolean,nullable=False,default=True)
+    created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
+    updated_at=db.Column(db.DateTime,default=datetime.utcnow,onupdate=datetime.utcnow,nullable=False)
 
 class Mentorship(db.Model):
     __tablename__="mentorships"
@@ -650,7 +663,7 @@ Activez votre accès avec ce lien (valable 48 heures) :
         if account.is_system_admin:return True
         today=date.today();mandate=Mandate.query.filter(Mandate.start_date<=today,Mandate.end_date>=today).order_by(Mandate.start_date.desc()).first()
         if not mandate:return False
-        allowed=["président","president","vice-président","vice president","vice-president","secrétaire trésorier","secretaire tresorier","secrétaire-trésorier","secretaire-tresorier"]
+        allowed=["président","president","vice-président","vice president","vice-president","secrétaire trésorier","secretaire tresorier","secrétaire-trésorier","secretaire-tresorier","trésorier","tresorier"]
         assignments=RoleAssignment.query.filter_by(mandate_id=mandate.id,member_id=account.member_id,status="ACTIVE").all()
         return any((db.session.get(Role,x.role_id) and db.session.get(Role,x.role_id).name.lower().strip() in allowed) for x in assignments)
 
@@ -664,6 +677,62 @@ Activez votre accès avec ce lien (valable 48 heures) :
         if account.is_system_admin:return True
         if board_only and not board_member(account):return False
         return not role_id or role_id in current_role_ids(account)
+
+    def vault_cipher():
+        key=os.getenv("VAULT_KEY","").strip()
+        if not key:return None
+        try:return Fernet(key.encode())
+        except Exception:return None
+
+    def require_board():
+        account,_=bearer_account()
+        if not account:return None,({"error":"Authentification requise."},401)
+        if not (account.is_system_admin or board_member(account)):return None,({"error":"Accès réservé au comité directeur."},403)
+        return account,None
+
+    def vault_value(cipher,value):
+        if not value:return ""
+        try:return cipher.decrypt(value).decode()
+        except (InvalidToken,ValueError):return ""
+
+    @app.route("/api/vault",methods=["GET","POST"])
+    def vault_collection():
+        account,err=require_board()
+        if err:return err
+        cipher=vault_cipher()
+        if not cipher:return {"error":"Le coffre sécurisé n'est pas configuré."},503
+        if request.method=="POST":
+            d=request.get_json(silent=True) or {}
+            if not (d.get("name") or "").strip():return {"error":"Nom obligatoire."},400
+            x=VaultEntry(name=d["name"].strip(),url=(d.get("url") or "").strip() or None,username_encrypted=cipher.encrypt((d.get("username") or "").encode()),password_encrypted=cipher.encrypt((d.get("password") or "").encode()),notes_encrypted=cipher.encrypt((d.get("notes") or "").encode()))
+            db.session.add(x);db.session.flush();audit(account,"VAULT_ENTRY_CREATED","vault_entry",x.id,x.name);db.session.commit()
+            return {"id":x.id,"name":x.name},201
+        rows=VaultEntry.query.filter_by(active=True).order_by(VaultEntry.name).all()
+        return jsonify([{"id":x.id,"name":x.name,"url":x.url,"username":vault_value(cipher,x.username_encrypted),"password":vault_value(cipher,x.password_encrypted),"notes":vault_value(cipher,x.notes_encrypted)} for x in rows])
+
+    @app.patch("/api/vault/<int:item_id>")
+    def vault_update(item_id):
+        account,err=require_board()
+        if err:return err
+        cipher=vault_cipher()
+        if not cipher:return {"error":"Le coffre sécurisé n'est pas configuré."},503
+        x=db.session.get(VaultEntry,item_id)
+        if not x or not x.active:return {"error":"Accès introuvable."},404
+        d=request.get_json(silent=True) or {}
+        if "name" in d:x.name=(d["name"] or "").strip() or x.name
+        if "url" in d:x.url=(d["url"] or "").strip() or None
+        if "username" in d:x.username_encrypted=cipher.encrypt((d["username"] or "").encode())
+        if "password" in d:x.password_encrypted=cipher.encrypt((d["password"] or "").encode())
+        if "notes" in d:x.notes_encrypted=cipher.encrypt((d["notes"] or "").encode())
+        audit(account,"VAULT_ENTRY_UPDATED","vault_entry",x.id,x.name);db.session.commit();return {"status":"ok"}
+
+    @app.delete("/api/vault/<int:item_id>")
+    def vault_delete(item_id):
+        account,err=require_board()
+        if err:return err
+        x=db.session.get(VaultEntry,item_id)
+        if not x:return {"error":"Accès introuvable."},404
+        x.active=False;audit(account,"VAULT_ENTRY_ARCHIVED","vault_entry",x.id,x.name);db.session.commit();return {"status":"archived"}
 
     ALLOWED_RESOURCE_EXTENSIONS={"pdf","doc","docx","xls","xlsx","png","jpg","jpeg","webp"}
     def resource_meta(x):
