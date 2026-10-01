@@ -274,6 +274,12 @@ def create_app():
         if not account_payload(account)["isAdmin"]:return None,({"error":"Accès administrateur requis."},403)
         return account,None
 
+    def require_system_admin():
+        account,_=bearer_account()
+        if not account:return None,({"error":"Authentification requise."},401)
+        if not account.is_system_admin:return None,({"error":"Accès administrateur système requis."},403)
+        return account,None
+
     def member_payload(m):
         membership=Membership.query.filter_by(member_id=m.id).order_by(Membership.id.desc()).first()
         account=m.user_account
@@ -366,7 +372,7 @@ def create_app():
 
     @app.post("/api/members/import/preview")
     def import_members_preview():
-        _,auth_error=require_admin()
+        _,auth_error=require_system_admin()
         if auth_error:return auth_error
         file=request.files.get("file")
         if not file or not file.filename.lower().endswith(".xlsx"):return {"error":"Fichier .xlsx requis."},400
@@ -376,7 +382,7 @@ def create_app():
 
     @app.post("/api/members/import/confirm")
     def import_members_confirm():
-        _,auth_error=require_admin()
+        _,auth_error=require_system_admin()
         if auth_error:return auth_error
         data=request.get_json(silent=True) or {}
         rows=data.get("rows") or []
@@ -405,14 +411,14 @@ def create_app():
 
     @app.get("/api/members/import/history")
     def import_members_history():
-        _,auth_error=require_admin()
+        _,auth_error=require_system_admin()
         if auth_error:return auth_error
         rows=ImportLog.query.order_by(ImportLog.created_at.desc()).limit(50).all()
         return jsonify([{"id":x.id,"filename":x.filename,"created":x.created_count,"updated":x.updated_count,"errors":x.error_count,"createdAt":x.created_at.isoformat(),"by":f"{x.account.member.first_name} {x.account.member.last_name}"} for x in rows])
 
     @app.get("/api/members/export")
     def export_members():
-        _,auth_error=require_admin()
+        _,auth_error=require_system_admin()
         if auth_error:return auth_error
         wb=Workbook();ws=wb.active;ws.title="Membres"
         ws.append(["Prénom","Nom","Société","Activité","Email","Téléphone","Date entrée","Date sortie","Statut","Accès Hub"])
@@ -502,8 +508,8 @@ Activez votre accès avec ce lien (valable 48 heures) :
             assignments=RoleAssignment.query.filter(RoleAssignment.member_id==account.member_id,RoleAssignment.mandate_id.in_(mandate_ids),RoleAssignment.status=="ACTIVE").all()
             role_ids=[a.role_id for a in assignments]
             if role_ids: roles=[r.name for r in Role.query.filter(Role.id.in_(role_ids)).all()]
-        admin=bool(account.is_system_admin or any(r.lower() in {"président","president","vice-président","vice-president","secrétaire-trésorier","secretaire-tresorier"} for r in roles))
-        return {"id":account.member.id,"firstName":account.member.first_name,"lastName":account.member.last_name,"email":account.email,"roles":roles,"isAdmin":admin}
+        admin=bool(account.is_system_admin or any(r.lower().strip() in {"président","president","vice-président","vice president","vice-president","secrétaire trésorier","secretaire tresorier","secrétaire-trésorier","secretaire-tresorier","trésorier","tresorier"} for r in roles))
+        return {"id":account.member.id,"firstName":account.member.first_name,"lastName":account.member.last_name,"email":account.email,"roles":roles,"isAdmin":admin,"isSystemAdmin":bool(account.is_system_admin)}
 
     def bearer_account():
         header=request.headers.get("Authorization","")
@@ -747,7 +753,7 @@ Activez votre accès avec ce lien (valable 48 heures) :
         ext=file.filename.rsplit(".",1)[-1].lower() if "." in file.filename else ""
         if ext not in ALLOWED_RESOURCE_EXTENSIONS:return {"error":"Type de fichier non autorisé."},400
         data=file.read()
-        if len(data)>15*1024*1024:return {"error":"Fichier trop volumineux (15 Mo maximum)."},413
+        if len(data)>5*1024*1024:return {"error":"Fichier trop volumineux (5 Mo maximum)."},413
         x=Resource(title=(request.form.get("title") or file.filename).strip(),description=request.form.get("description"),category=request.form.get("category") or "GENERAL",role_id=int(request.form["roleId"]) if request.form.get("roleId") else None,board_only=request.form.get("boardOnly")=="true",file_name=file.filename,file_type=file.mimetype,file_data=data)
         db.session.add(x);db.session.flush();audit(_, "RESOURCE_FILE_UPLOADED","resource",x.id,x.file_name);db.session.commit();return resource_meta(x),201
 
@@ -943,7 +949,7 @@ Activez votre accès avec ce lien (valable 48 heures) :
 
     @app.get("/api/audit")
     def audit_list():
-        account,err=require_admin()
+        account,err=require_system_admin()
         if err:return err
         q=AuditLog.query.order_by(AuditLog.created_at.desc()).limit(300).all()
         out=[]
