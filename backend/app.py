@@ -91,6 +91,20 @@ class Resource(db.Model):
     file_data=db.Column(db.LargeBinary)
     created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
 
+class ChapterDocument(db.Model):
+    __tablename__="chapter_documents"
+    id=db.Column(db.Integer,primary_key=True)
+    mandate_id=db.Column(db.Integer,db.ForeignKey("mandates.id"),nullable=False,index=True)
+    uploaded_by_member_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=True,index=True)
+    title=db.Column(db.String(255),nullable=False)
+    description=db.Column(db.Text)
+    category=db.Column(db.String(80),nullable=False,default="AUTRE")
+    file_name=db.Column(db.String(255),nullable=False)
+    file_type=db.Column(db.String(120))
+    file_data=db.Column(db.LargeBinary,nullable=False)
+    active=db.Column(db.Boolean,nullable=False,default=True)
+    created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False,index=True)
+
 class Platform(db.Model):
     __tablename__="platforms"
     id=db.Column(db.Integer,primary_key=True)
@@ -683,6 +697,57 @@ Activez votre accès avec ce lien (valable 48 heures) :
         if account.is_system_admin:return True
         if board_only and not board_member(account):return False
         return not role_id or role_id in current_role_ids(account)
+
+    CHAPTER_DOCUMENT_EXTENSIONS={"pdf","doc","docx","xls","xlsx","ppt","pptx","png","jpg","jpeg","webp"}
+    CHAPTER_DOCUMENT_MAX_SIZE=5*1024*1024
+
+    def chapter_document_payload(x,current_mandate_id=None):
+        mandate=db.session.get(Mandate,x.mandate_id)
+        author=db.session.get(Member,x.uploaded_by_member_id) if x.uploaded_by_member_id else None
+        return {"id":x.id,"title":x.title,"description":x.description,"category":x.category,"fileName":x.file_name,"fileType":x.file_type,"createdAt":x.created_at.isoformat(),"uploadedBy":f"{author.first_name} {author.last_name}" if author else "Comité","mandate":{"id":mandate.id,"name":mandate.name,"startDate":mandate.start_date.isoformat(),"endDate":mandate.end_date.isoformat()} if mandate else None,"current":bool(mandate and current_mandate_id==mandate.id)}
+
+    @app.get("/api/documents")
+    def chapter_documents_list():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        current=active_mandate()
+        rows=ChapterDocument.query.filter_by(active=True).order_by(ChapterDocument.created_at.desc()).all()
+        return jsonify([chapter_document_payload(x,current.id if current else None) for x in rows])
+
+    @app.post("/api/documents/upload")
+    def chapter_documents_upload():
+        account,err=require_admin()
+        if err:return err
+        mandate=active_mandate()
+        if not mandate:return {"error":"Aucune mandature active. Impossible de rattacher le document."},400
+        file=request.files.get("file")
+        if not file or not file.filename:return {"error":"Fichier obligatoire."},400
+        ext=file.filename.rsplit(".",1)[-1].lower() if "." in file.filename else ""
+        if ext not in CHAPTER_DOCUMENT_EXTENSIONS:return {"error":"Type de fichier non autorisé."},400
+        data=file.read(CHAPTER_DOCUMENT_MAX_SIZE+1)
+        if len(data)>CHAPTER_DOCUMENT_MAX_SIZE:return {"error":"Le fichier dépasse 5 Mo."},413
+        title=(request.form.get("title") or file.filename).strip()
+        if not title:return {"error":"Titre obligatoire."},400
+        x=ChapterDocument(mandate_id=mandate.id,uploaded_by_member_id=account.member_id,title=title,description=(request.form.get("description") or "").strip() or None,category=(request.form.get("category") or "AUTRE").strip().upper(),file_name=file.filename,file_type=file.mimetype or "application/octet-stream",file_data=data)
+        db.session.add(x);db.session.flush();audit(account,"CHAPTER_DOCUMENT_PUBLISHED","chapter_document",x.id,f"{x.file_name}; mandate={mandate.id}");db.session.commit()
+        return chapter_document_payload(x,mandate.id),201
+
+    @app.get("/api/documents/<int:item_id>/file")
+    def chapter_document_file(item_id):
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        x=db.session.get(ChapterDocument,item_id)
+        if not x or not x.active:return {"error":"Document introuvable."},404
+        return send_file(io.BytesIO(x.file_data),mimetype=x.file_type or "application/octet-stream",download_name=x.file_name,as_attachment=True)
+
+    @app.delete("/api/documents/<int:item_id>")
+    def chapter_document_archive(item_id):
+        account,err=require_admin()
+        if err:return err
+        x=db.session.get(ChapterDocument,item_id)
+        if not x:return {"error":"Document introuvable."},404
+        x.active=False;audit(account,"CHAPTER_DOCUMENT_ARCHIVED","chapter_document",x.id,x.title);db.session.commit()
+        return {"status":"archived"}
 
     def vault_cipher():
         key=os.getenv("VAULT_KEY","").strip()
