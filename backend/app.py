@@ -327,6 +327,26 @@ def create_app():
         rows=Member.query.order_by(Member.last_name,Member.first_name).all()
         return jsonify([member_payload(m) for m in rows])
 
+    @app.post("/api/members/<int:member_id>/password")
+    def admin_set_member_password(member_id):
+        account,auth_error=require_system_admin()
+        if auth_error:return auth_error
+        member=db.session.get(Member,member_id)
+        if not member:return {"error":"Membre introuvable."},404
+        target=member.user_account
+        if not target:return {"error":"Ce membre ne possède pas encore de compte Hub actif."},400
+        data=request.get_json(silent=True) or {}
+        password=data.get("password") or ""
+        if len(password)<10:return {"error":"Le mot de passe doit contenir au moins 10 caractères."},400
+        target.password_hash=generate_password_hash(password)
+        target.status="ACTIVE"
+        target.password_reset_token=None
+        target.password_reset_expires_at=None
+        AuthSession.query.filter_by(account_id=target.id).delete()
+        audit(account,"ADMIN_MEMBER_PASSWORD_CHANGED","user_account",target.id,f"memberId={member.id}")
+        db.session.commit()
+        return {"status":"ok","message":"Mot de passe modifié. Les anciennes sessions du membre ont été fermées."}
+
     @app.route("/api/members/<int:member_id>",methods=["GET","PATCH"])
     def member_detail(member_id):
         _,auth_error=require_admin()
