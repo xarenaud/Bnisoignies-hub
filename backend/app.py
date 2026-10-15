@@ -31,6 +31,8 @@ class UserAccount(db.Model):
     status=db.Column(db.String(30),nullable=False,default="INVITED")
     invitation_token=db.Column(db.String(128),unique=True,index=True)
     invitation_expires_at=db.Column(db.DateTime)
+    password_reset_token=db.Column(db.String(128),unique=True,index=True)
+    password_reset_expires_at=db.Column(db.DateTime)
     activated_at=db.Column(db.DateTime)
     is_system_admin=db.Column(db.Boolean,nullable=False,default=False)
     member=db.relationship("Member",backref=db.backref("user_account",uselist=False))
@@ -494,6 +496,61 @@ Activez votre accès avec ce lien (valable 48 heures) :
                 try:smtp.quit()
                 except Exception:pass
         return {"status":"INVITED","activationUrl":activation_url,"expiresInHours":48,"emailSent":email_sent}
+
+    @app.post("/api/auth/forgot-password")
+    def forgot_password():
+        data=request.get_json(silent=True) or {}
+        email=(data.get("email") or "").strip().lower()
+        account=UserAccount.query.filter(db.func.lower(UserAccount.email)==email).first() if email else None
+        if account and account.status=="ACTIVE":
+            account.password_reset_token=secrets.token_urlsafe(32)
+            account.password_reset_expires_at=datetime.utcnow()+timedelta(hours=1)
+            db.session.commit()
+            base=os.getenv("APP_URL","https://hub.bim-soignies.be").rstrip("/")
+            reset_url=f"{base}/?reset={account.password_reset_token}"
+            host=os.getenv("SMTP_HOST","").strip();sender=os.getenv("SMTP_FROM","").strip()
+            if host and sender:
+                msg=EmailMessage()
+                msg["Subject"]="BNI Soignies Hub — réinitialisation du mot de passe"
+                msg["From"]=sender;msg["To"]=account.email
+                msg.set_content(f"""Bonjour {account.member.first_name},
+
+Une demande de réinitialisation de votre mot de passe BNI Soignies Hub a été reçue.
+
+Choisissez un nouveau mot de passe avec ce lien (valable 1 heure) :
+{reset_url}
+
+Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet e-mail.""")
+                port=int(os.getenv("SMTP_PORT","587"));user=os.getenv("SMTP_USER","").strip();password=os.getenv("SMTP_PASSWORD","")
+                use_ssl=os.getenv("SMTP_SSL","false").lower() in {"1","true","yes"}
+                smtp=(smtplib.SMTP_SSL(host,port,timeout=15) if use_ssl else smtplib.SMTP(host,port,timeout=15))
+                try:
+                    if not use_ssl and os.getenv("SMTP_STARTTLS","true").lower() in {"1","true","yes"}:smtp.starttls()
+                    if user:smtp.login(user,password)
+                    smtp.send_message(msg)
+                except Exception as exc:
+                    app.logger.exception("Password reset email delivery failed for account %s: %s",account.id,exc)
+                finally:
+                    try:smtp.quit()
+                    except Exception:pass
+        return {"status":"ok","message":"Si cette adresse correspond à un compte actif, un e-mail de réinitialisation a été envoyé."}
+
+    @app.post("/api/auth/reset-password")
+    def reset_password():
+        data=request.get_json(silent=True) or {}
+        token=(data.get("token") or "").strip()
+        password=data.get("password") or ""
+        if len(password)<10:return {"error":"Le mot de passe doit contenir au moins 10 caractères."},400
+        account=UserAccount.query.filter_by(password_reset_token=token).first()
+        if not account or not account.password_reset_expires_at or account.password_reset_expires_at<datetime.utcnow():
+            return {"error":"Lien de réinitialisation invalide ou expiré."},400
+        account.password_hash=generate_password_hash(password)
+        account.password_reset_token=None
+        account.password_reset_expires_at=None
+        AuthSession.query.filter_by(account_id=account.id).delete()
+        audit(account,"PASSWORD_RESET","user_account",account.id)
+        db.session.commit()
+        return {"status":"ok","message":"Votre mot de passe a été modifié."}
 
     @app.post("/api/auth/activate")
     def activate():
@@ -1607,6 +1664,8 @@ Cette demande est également disponible dans BNI Soignies Hub.""")
         db.create_all()
         # Temporary lightweight migration until Alembic is introduced.
         db.session.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS is_system_admin BOOLEAN NOT NULL DEFAULT FALSE"))
+        db.session.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS password_reset_token VARCHAR(128)"))
+        db.session.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS password_reset_expires_at TIMESTAMP"))
         db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_name VARCHAR(255)"))
         db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_type VARCHAR(120)"))
         db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_data BYTEA"))
