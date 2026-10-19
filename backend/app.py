@@ -75,6 +75,20 @@ class FeatureFlag(db.Model):
     enabled=db.Column(db.Boolean,nullable=False,default=False)
     updated_at=db.Column(db.DateTime,default=datetime.utcnow,onupdate=datetime.utcnow,nullable=False)
 
+class OffMembership(db.Model):
+    __tablename__="off_memberships"
+    id=db.Column(db.Integer,primary_key=True)
+    member_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    plan_code=db.Column(db.String(30),nullable=False,index=True)
+    status=db.Column(db.String(30),nullable=False,default="OFFERED",index=True)
+    trial_number=db.Column(db.Integer,nullable=False,default=1)
+    starts_at=db.Column(db.Date)
+    ends_at=db.Column(db.Date)
+    offered_by_account_id=db.Column(db.Integer,db.ForeignKey("user_accounts.id"),nullable=True,index=True)
+    note=db.Column(db.Text)
+    created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False,index=True)
+    updated_at=db.Column(db.DateTime,default=datetime.utcnow,onupdate=datetime.utcnow,nullable=False)
+
 class AuditLog(db.Model):
     __tablename__="audit_logs"
     id=db.Column(db.Integer,primary_key=True)
@@ -445,6 +459,11 @@ def create_app():
 
     V2_FEATURES={
         "NETWORK_MODULE":("Module Réseau","Afficher le menu Réseau aux membres autorisés."),
+        "OFF_MEMBERSHIP":("Adhésions Membres OFF","Activer les offres et inscriptions au réseau OFF."),
+        "OFF_PLAN_TRIAL":("Formule OFF · Test 1 mois","Proposer la formule test 1 mois à 100 € HTVA + petit déjeuner."),
+        "OFF_PLAN_ANNUAL":("Formule OFF · 1 an","Proposer l'inscription annuelle à 600 € HTVA + petit déjeuner."),
+        "OFF_PLAN_FREE":("Formule OFF · Gratuit / test","Proposer une période gratuite aux anciens membres."),
+        "OFF_FORMER_HOME_OFFER":("Proposition OFF aux anciens","Afficher automatiquement aux membres anciens la possibilité de rester dans le réseau OFF."),
         "REFERRALS":("Recommandations","Encoder et suivre les recommandations entre membres."),
         "BUSINESS":("Business généré","Encoder les Merci pour le Business et le chiffre d'affaires généré."),
         "ONE_TO_ONE":("Tête-à-Tête","Encoder les rendez-vous individuels entre membres."),
@@ -819,6 +838,117 @@ def create_app():
         rows.sort(key=lambda x:(x["score"],x["businessGenerated"],x["referralsGiven"]),reverse=True)
         for i,x in enumerate(rows,1):x["rank"]=i
         return jsonify(rows)
+
+    OFF_PLANS={
+        "TRIAL":{"label":"Test 1 mois","price":100,"priceLabel":"100 € HTVA + petit déjeuner","durationDays":30,"rules":["Venir aux 4 jeudis du mois","Inviter 2 personnes","Donner 5 recommandations d'affaires","Réaliser 2 Tête-à-Tête"],"renewable":"Renouvelable une seule fois avant passage en annuel."},
+        "ANNUAL":{"label":"Inscription 1 an","price":600,"priceLabel":"600 € HTVA + petit déjeuner","durationDays":365,"rules":["Respecter les règles de présence, d'absence et de suppléance","Encoder son activité avec les membres du Hub","Participer activement au développement du réseau"],"renewable":"Renouvelable annuellement."},
+        "FREE":{"label":"Gratuit / test","price":0,"priceLabel":"Gratuit","durationDays":30,"rules":["Réservé principalement aux anciens membres","Permet de tester le réseau OFF avant arrêt complet ou inscription payante"],"renewable":"Durée et suite décidées avec le comité."}
+    }
+
+    def off_plan_enabled(code):
+        mapping={"TRIAL":"OFF_PLAN_TRIAL","ANNUAL":"OFF_PLAN_ANNUAL","FREE":"OFF_PLAN_FREE"}
+        return feature_enabled("OFF_MEMBERSHIP") and feature_enabled(mapping[code])
+
+    def off_membership_payload(x):
+        plan=OFF_PLANS.get(x.plan_code,{})
+        return {"id":x.id,"memberId":x.member_id,"planCode":x.plan_code,"plan":plan,"status":x.status,"trialNumber":x.trial_number,"startsAt":x.starts_at.isoformat() if x.starts_at else None,"endsAt":x.ends_at.isoformat() if x.ends_at else None,"note":x.note,"createdAt":x.created_at.isoformat()}
+
+    @app.get("/api/off-membership/me")
+    def off_membership_me():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        if not feature_enabled("OFF_MEMBERSHIP"):return {"enabled":False,"offers":[],"plans":[],"autoFormerOffer":False}
+        membership=Membership.query.filter_by(member_id=account.member_id).order_by(Membership.id.desc()).first()
+        rows=OffMembership.query.filter_by(member_id=account.member_id).filter(OffMembership.status.in_(["OFFERED","INTERESTED","ACTIVE"])).order_by(OffMembership.created_at.desc()).all()
+        plans=[{"code":code,**data} for code,data in OFF_PLANS.items() if off_plan_enabled(code)]
+        auto_former=bool(membership and membership.status=="FORMER" and feature_enabled("OFF_FORMER_HOME_OFFER"))
+        return {"enabled":True,"offers":[off_membership_payload(x) for x in rows],"plans":plans,"autoFormerOffer":auto_former,"isFormer":bool(membership and membership.status=="FORMER")}
+
+    @app.post("/api/off-membership/<int:offer_id>/interest")
+    def off_membership_interest(offer_id):
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        x=db.session.get(OffMembership,offer_id)
+        if not x or x.member_id!=account.member_id:return {"error":"Proposition introuvable."},404
+        if x.status not in {"OFFERED","INTERESTED"}:return {"error":"Cette proposition n'est plus disponible."},400
+        x.status="INTERESTED"
+        notify(account.member_id,"OFF_MEMBERSHIP_INTEREST","Intérêt pour le réseau OFF","Votre intérêt a bien été enregistré. Le comité vous recontactera.","home")
+        audit(account,"OFF_MEMBERSHIP_INTEREST","off_membership",x.id,x.plan_code)
+        db.session.commit()
+        return off_membership_payload(x)
+
+    @app.post("/api/off-membership/request")
+    def off_membership_request():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        if not feature_enabled("OFF_MEMBERSHIP"):return {"error":"Les adhésions OFF ne sont pas activées."},403
+        data=request.get_json(silent=True) or {}
+        code=(data.get("planCode") or "").strip().upper()
+        if code not in OFF_PLANS or not off_plan_enabled(code):return {"error":"Cette formule n'est pas disponible."},400
+        existing=OffMembership.query.filter_by(member_id=account.member_id,plan_code=code).filter(OffMembership.status.in_(["OFFERED","INTERESTED","ACTIVE"])).first()
+        if existing:return off_membership_payload(existing)
+        trial_count=OffMembership.query.filter_by(member_id=account.member_id,plan_code="TRIAL").filter(OffMembership.status.in_(["ACTIVE","EXPIRED"])).count()
+        if code=="TRIAL" and trial_count>=2:return {"error":"La formule test 1 mois a déjà été utilisée deux fois. Une inscription annuelle est nécessaire."},400
+        x=OffMembership(member_id=account.member_id,plan_code=code,status="INTERESTED",trial_number=(trial_count+1 if code=="TRIAL" else 1),note=(data.get("note") or "").strip() or None)
+        db.session.add(x);db.session.flush()
+        audit(account,"OFF_MEMBERSHIP_REQUEST","off_membership",x.id,code)
+        db.session.commit()
+        return off_membership_payload(x),201
+
+    @app.post("/api/members/<int:member_id>/off-membership/offer")
+    def system_offer_off_membership(member_id):
+        account,err=require_system_admin()
+        if err:return err
+        member=db.session.get(Member,member_id)
+        if not member:return {"error":"Membre introuvable."},404
+        data=request.get_json(silent=True) or {}
+        code=(data.get("planCode") or "").strip().upper()
+        if code not in OFF_PLANS:return {"error":"Formule inconnue."},400
+        if not feature_enabled("OFF_MEMBERSHIP") or not off_plan_enabled(code):return {"error":"Cette formule doit d'abord être activée dans Fonctionnalités."},400
+        trial_count=OffMembership.query.filter_by(member_id=member_id,plan_code="TRIAL").filter(OffMembership.status.in_(["ACTIVE","EXPIRED"])).count()
+        if code=="TRIAL" and trial_count>=2:return {"error":"Ce membre a déjà bénéficié de deux périodes test."},400
+        x=OffMembership(member_id=member_id,plan_code=code,status="OFFERED",trial_number=(trial_count+1 if code=="TRIAL" else 1),offered_by_account_id=account.id,note=(data.get("note") or "").strip() or None)
+        db.session.add(x);db.session.flush()
+        notify(member_id,"OFF_MEMBERSHIP_OFFER","Invitation à découvrir le réseau OFF",f"Une proposition {OFF_PLANS[code]['label']} vous attend dans le Hub.","home")
+        audit(account,"OFF_MEMBERSHIP_OFFERED","off_membership",x.id,f"member={member_id};plan={code}")
+        db.session.commit()
+        return off_membership_payload(x),201
+
+    @app.get("/api/members/<int:member_id>/off-memberships")
+    def system_member_off_memberships(member_id):
+        _,err=require_system_admin()
+        if err:return err
+        rows=OffMembership.query.filter_by(member_id=member_id).order_by(OffMembership.created_at.desc()).all()
+        return jsonify([off_membership_payload(x) for x in rows])
+
+    @app.post("/api/off-membership/<int:offer_id>/activate")
+    def system_activate_off_membership(offer_id):
+        account,err=require_system_admin()
+        if err:return err
+        x=db.session.get(OffMembership,offer_id)
+        if not x:return {"error":"Adhésion introuvable."},404
+        data=request.get_json(silent=True) or {}
+        start=date.today()
+        if data.get("startsAt"):
+            try:start=date.fromisoformat(data["startsAt"])
+            except ValueError:return {"error":"Date de début invalide."},400
+        duration=OFF_PLANS.get(x.plan_code,{}).get("durationDays",30)
+        end=start+timedelta(days=duration-1)
+        if data.get("endsAt"):
+            try:end=date.fromisoformat(data["endsAt"])
+            except ValueError:return {"error":"Date de fin invalide."},400
+        x.status="ACTIVE";x.starts_at=start;x.ends_at=end
+        member=db.session.get(Member,x.member_id)
+        member.network_type="OFF";member.network_access_enabled=True
+        membership=Membership.query.filter_by(member_id=member.id).order_by(Membership.id.desc()).first()
+        if not membership:membership=Membership(member_id=member.id);db.session.add(membership)
+        membership.status="OFF"
+        current=MemberNetworkHistory.query.filter_by(member_id=member.id,end_date=None).order_by(MemberNetworkHistory.start_date.desc()).first()
+        if current and current.network_type!="OFF":current.end_date=start-timedelta(days=1)
+        if not current or current.network_type!="OFF":db.session.add(MemberNetworkHistory(member_id=member.id,network_type="OFF",start_date=start,changed_by_account_id=account.id))
+        audit(account,"OFF_MEMBERSHIP_ACTIVATED","off_membership",x.id,f"{x.plan_code};{start}->{end}")
+        db.session.commit()
+        return off_membership_payload(x)
 
     @app.put("/api/members/<int:member_id>/network-access")
     def system_member_network_access(member_id):
