@@ -714,11 +714,11 @@ def create_app():
         refs_given=Referral.query.filter(Referral.from_member_id==member_id,Referral.created_at>=start).count()
         refs_received=Referral.query.filter(Referral.to_member_id==member_id,Referral.created_at>=start).count()
         refs_won=Referral.query.filter(Referral.to_member_id==member_id,Referral.status=="WON",Referral.created_at>=start).count()
-        one_to_ones=OneToOne.query.filter(db.or_(OneToOne.member_a_id==member_id,OneToOne.member_b_id==member_id),OneToOne.meeting_date>=start.date()).count()
-        visitors=NetworkVisitor.query.filter(NetworkVisitor.invited_by_member_id==member_id,NetworkVisitor.visit_date>=start.date()).count()
-        generated=float(db.session.query(db.func.coalesce(db.func.sum(BusinessThanks.amount),0)).filter(BusinessThanks.credited_member_id==member_id,BusinessThanks.business_date>=start.date()).scalar() or 0)
-        received=float(db.session.query(db.func.coalesce(db.func.sum(BusinessThanks.amount),0)).filter(BusinessThanks.from_member_id==member_id,BusinessThanks.business_date>=start.date()).scalar() or 0)
-        attendance=AttendanceRecord.query.join(Meeting,Meeting.id==AttendanceRecord.meeting_id).filter(AttendanceRecord.member_id==member_id,Meeting.date>=start.date()).all()
+        one_to_ones=OneToOne.query.filter(db.or_(OneToOne.member_a_id==member_id,OneToOne.member_b_id==member_id),OneToOne.meeting_date>=start).count()
+        visitors=NetworkVisitor.query.filter(NetworkVisitor.invited_by_member_id==member_id,NetworkVisitor.visit_date>=start).count()
+        generated=float(db.session.query(db.func.coalesce(db.func.sum(BusinessThanks.amount),0)).filter(BusinessThanks.credited_member_id==member_id,BusinessThanks.business_date>=start).scalar() or 0)
+        received=float(db.session.query(db.func.coalesce(db.func.sum(BusinessThanks.amount),0)).filter(BusinessThanks.from_member_id==member_id,BusinessThanks.business_date>=start).scalar() or 0)
+        attendance=AttendanceRecord.query.join(Meeting,Meeting.id==AttendanceRecord.meeting_id).filter(AttendanceRecord.member_id==member_id,Meeting.date>=start).all()
         counted=[a for a in attendance if a.status in {"PRESENT","SUBSTITUTE","ABSENT"}]
         attendance_rate=100.0 if not counted else round(100*sum(1 for a in counted if a.status in {"PRESENT","SUBSTITUTE"})/len(counted),1)
         monthly=max(1,months)
@@ -732,7 +732,7 @@ def create_app():
         estimated_given=float(db.session.query(db.func.coalesce(db.func.sum(Referral.estimated_value),0)).filter(Referral.from_member_id==member_id,Referral.created_at>=start).scalar() or 0)
         estimated_received=float(db.session.query(db.func.coalesce(db.func.sum(Referral.estimated_value),0)).filter(Referral.to_member_id==member_id,Referral.created_at>=start).scalar() or 0)
         avg_won_value=round(received/refs_won,2) if refs_won else 0
-        return {"memberId":member_id,"member":member_name(member_id),"months":months,"periodStart":start.date().isoformat(),"periodEnd":today.isoformat(),"referralsGiven":refs_given,"referralsReceived":refs_received,"referralsWon":refs_won,"conversionRate":conversion,"oneToOnes":one_to_ones,"visitors":visitors,"businessGenerated":generated,"businessReceived":received,"estimatedValueGiven":estimated_given,"estimatedValueReceived":estimated_received,"averageWonReferralValue":avg_won_value,"attendanceRate":attendance_rate,"score":score,"scoreColor":color,"scoreBreakdown":{"referrals":round(ref_score,1),"oneToOnes":round(oto_score,1),"visitors":round(visitor_score,1),"attendance":round(attendance_score,1)},"targets":{"referralsPerMonth":5,"oneToOnesPerMonth":2,"visitorsPerMonth":1,"absenceTarget":0}}
+        return {"memberId":member_id,"member":member_name(member_id),"months":months,"periodStart":start.isoformat(),"periodEnd":today.isoformat(),"referralsGiven":refs_given,"referralsReceived":refs_received,"referralsWon":refs_won,"conversionRate":conversion,"oneToOnes":one_to_ones,"visitors":visitors,"businessGenerated":generated,"businessReceived":received,"estimatedValueGiven":estimated_given,"estimatedValueReceived":estimated_received,"averageWonReferralValue":avg_won_value,"attendanceRate":attendance_rate,"score":score,"scoreColor":color,"scoreBreakdown":{"referrals":round(ref_score,1),"oneToOnes":round(oto_score,1),"visitors":round(visitor_score,1),"attendance":round(attendance_score,1)},"targets":{"referralsPerMonth":5,"oneToOnesPerMonth":2,"visitorsPerMonth":1,"absenceTarget":0}}
 
     def contribution_window(start_date,end_date):
         members=Member.query.all()
@@ -797,10 +797,10 @@ def create_app():
             if m.id in seen:continue
             seen.add(m.id)
             refs=Referral.query.filter(Referral.from_member_id==m.id,Referral.created_at>=start).count()
-            otos=OneToOne.query.filter(db.or_(OneToOne.member_a_id==m.id,OneToOne.member_b_id==m.id),OneToOne.meeting_date>=start.date()).count()
-            visitors=NetworkVisitor.query.filter(NetworkVisitor.invited_by_member_id==m.id,NetworkVisitor.visit_date>=start.date()).count()
-            generated=float(db.session.query(db.func.coalesce(db.func.sum(BusinessThanks.amount),0)).filter(BusinessThanks.credited_member_id==m.id,BusinessThanks.business_date>=start.date()).scalar() or 0)
-            att=AttendanceRecord.query.join(Meeting,Meeting.id==AttendanceRecord.meeting_id).filter(AttendanceRecord.member_id==m.id,Meeting.date>=start.date()).all()
+            otos=OneToOne.query.filter(db.or_(OneToOne.member_a_id==m.id,OneToOne.member_b_id==m.id),OneToOne.meeting_date>=start).count()
+            visitors=NetworkVisitor.query.filter(NetworkVisitor.invited_by_member_id==m.id,NetworkVisitor.visit_date>=start).count()
+            generated=float(db.session.query(db.func.coalesce(db.func.sum(BusinessThanks.amount),0)).filter(BusinessThanks.credited_member_id==m.id,BusinessThanks.business_date>=start).scalar() or 0)
+            att=AttendanceRecord.query.join(Meeting,Meeting.id==AttendanceRecord.meeting_id).filter(AttendanceRecord.member_id==m.id,Meeting.date>=start).all()
             counted=[a for a in att if a.status in {"PRESENT","SUBSTITUTE","ABSENT"}];rate=100 if not counted else 100*sum(1 for a in counted if a.status in {"PRESENT","SUBSTITUTE"})/len(counted)
             score=round(min(35,35*(refs/months)/5)+min(25,25*(otos/months)/2)+min(20,20*(visitors/months))+min(20,20*rate/100))
             rows.append({"memberId":m.id,"member":f"{m.first_name} {m.last_name}","company":m.company,"networkType":m.network_type or "OFFICIAL_BNI","score":score,"referralsGiven":refs,"oneToOnes":otos,"visitors":visitors,"businessGenerated":generated})
