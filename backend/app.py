@@ -1812,6 +1812,16 @@ Cette demande est également disponible dans BNI Soignies Hub.""")
         admin_email=os.getenv("SYSTEM_ADMIN_EMAIL","").strip().lower()
         if admin_email:
             account=UserAccount.query.filter(db.func.lower(UserAccount.email)==admin_email).first()
+            if not account and os.getenv("V2_LAB","").lower()=="true":
+                initial_password=os.getenv("V2_ADMIN_INITIAL_PASSWORD","")
+                if initial_password:
+                    member=Member(first_name="Xavier",last_name="Renaud",email=admin_email,network_type="OFFICIAL_BNI")
+                    db.session.add(member);db.session.flush()
+                    account=UserAccount(member_id=member.id,email=admin_email,password_hash=generate_password_hash(initial_password),status="ACTIVE",activated_at=datetime.utcnow(),is_system_admin=True)
+                    db.session.add(account)
+                    db.session.add(Membership(member_id=member.id,start_date=date(2017,4,1),status="ACTIVE"))
+                    db.session.add(MemberNetworkHistory(member_id=member.id,network_type="OFFICIAL_BNI",start_date=date(2017,4,1)))
+                    db.session.commit()
             if account:
                 account.is_system_admin=True
                 membership=Membership.query.filter_by(member_id=account.member_id).order_by(Membership.id.asc()).first()
