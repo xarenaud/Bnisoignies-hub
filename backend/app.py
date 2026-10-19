@@ -432,7 +432,9 @@ def create_app():
             db.session.flush()
             member_status=(data.get("status") or "ACTIVE").strip().upper()
             if member_status not in {"ACTIVE","ONBOARDING","FORMER","OFF"}:return {"error":"Statut membre invalide."},400
-            if member_status=="OFF":member.network_type="OFF"
+            if member_status=="OFF":
+                member.network_type="OFF"
+                member.network_access_enabled=True
             membership=Membership(member_id=member.id,start_date=date.today(),status=member_status)
             db.session.add(membership)
             db.session.add(MemberNetworkHistory(member_id=member.id,network_type=member.network_type,start_date=date.today()))
@@ -877,6 +879,8 @@ def create_app():
             new_status=(data["status"] or "").strip().upper()
             if new_status not in {"ACTIVE","ONBOARDING","FORMER","OFF"}:return {"error":"Statut membre invalide."},400
             membership.status=new_status
+            if new_status=="OFF":
+                member.network_access_enabled=True
             if new_status=="OFF" and member.network_type!="OFF":
                 current=MemberNetworkHistory.query.filter_by(member_id=member.id,end_date=None).order_by(MemberNetworkHistory.start_date.desc()).first()
                 if current:current.end_date=date.today()-timedelta(days=1)
@@ -952,7 +956,9 @@ def create_app():
             status=(item.get("status") or "").strip().upper()
             if status in {"ACTIVE","ONBOARDING","FORMER","OFF"}:
                 membership.status=status
-                if status=="OFF":member.network_type="OFF"
+                if status=="OFF":
+                    member.network_type="OFF"
+                    member.network_access_enabled=True
         account,_=bearer_account()
         log=ImportLog(account_id=account.id,filename=(data.get("filename") or "import.xlsx")[:255],created_count=created,updated_count=updated,error_count=0)
         db.session.add(log)
