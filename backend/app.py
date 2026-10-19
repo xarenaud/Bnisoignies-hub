@@ -20,6 +20,8 @@ class Member(db.Model):
     activity=db.Column(db.String(180))
     email=db.Column(db.String(180),index=True)
     phone=db.Column(db.String(50))
+    network_type=db.Column(db.String(30),nullable=False,default="OFFICIAL_BNI",index=True)
+    network_access_enabled=db.Column(db.Boolean,nullable=False,default=False,index=True)
     created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
 
 class UserAccount(db.Model):
@@ -54,6 +56,24 @@ class Membership(db.Model):
     end_date=db.Column(db.Date)
     status=db.Column(db.String(30),nullable=False,default="ACTIVE")
     member=db.relationship("Member",backref="memberships")
+
+class MemberNetworkHistory(db.Model):
+    __tablename__="member_network_history"
+    id=db.Column(db.Integer,primary_key=True)
+    member_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    network_type=db.Column(db.String(30),nullable=False,index=True)
+    start_date=db.Column(db.Date,nullable=False,default=date.today)
+    end_date=db.Column(db.Date)
+    changed_by_account_id=db.Column(db.Integer,db.ForeignKey("user_accounts.id"),nullable=True,index=True)
+    created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
+
+class FeatureFlag(db.Model):
+    __tablename__="feature_flags"
+    key=db.Column(db.String(80),primary_key=True)
+    label=db.Column(db.String(180),nullable=False)
+    description=db.Column(db.Text)
+    enabled=db.Column(db.Boolean,nullable=False,default=False)
+    updated_at=db.Column(db.DateTime,default=datetime.utcnow,onupdate=datetime.utcnow,nullable=False)
 
 class AuditLog(db.Model):
     __tablename__="audit_logs"
@@ -239,6 +259,77 @@ class SwapRequest(db.Model):
     status=db.Column(db.String(30),nullable=False,default="OPEN")
     created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
 
+class Referral(db.Model):
+    __tablename__="referrals"
+    id=db.Column(db.Integer,primary_key=True)
+    from_member_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    to_member_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    contact_name=db.Column(db.String(180),nullable=False)
+    company=db.Column(db.String(180))
+    contact_email=db.Column(db.String(180))
+    contact_phone=db.Column(db.String(60))
+    notes=db.Column(db.Text)
+    status=db.Column(db.String(30),nullable=False,default="SENT",index=True)
+    estimated_value=db.Column(db.Numeric(12,2))
+    closed_at=db.Column(db.DateTime,index=True)
+    created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False,index=True)
+    updated_at=db.Column(db.DateTime,default=datetime.utcnow,onupdate=datetime.utcnow,nullable=False)
+
+class ReferralStatusHistory(db.Model):
+    __tablename__="referral_status_history"
+    id=db.Column(db.Integer,primary_key=True)
+    referral_id=db.Column(db.Integer,db.ForeignKey("referrals.id"),nullable=False,index=True)
+    status=db.Column(db.String(30),nullable=False)
+    note=db.Column(db.Text)
+    changed_by_member_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False,index=True)
+
+class BusinessThanks(db.Model):
+    __tablename__="business_thanks"
+    id=db.Column(db.Integer,primary_key=True)
+    from_member_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    credited_member_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    referral_id=db.Column(db.Integer,db.ForeignKey("referrals.id"),nullable=True,index=True)
+    amount=db.Column(db.Numeric(12,2),nullable=False)
+    notes=db.Column(db.Text)
+    business_date=db.Column(db.Date,nullable=False,default=date.today,index=True)
+    created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False,index=True)
+
+class OneToOne(db.Model):
+    __tablename__="one_to_ones"
+    id=db.Column(db.Integer,primary_key=True)
+    member_a_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    member_b_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    meeting_date=db.Column(db.Date,nullable=False,default=date.today,index=True)
+    duration_minutes=db.Column(db.Integer)
+    notes=db.Column(db.Text)
+    created_by_member_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False,index=True)
+
+class NetworkVisitor(db.Model):
+    __tablename__="network_visitors"
+    id=db.Column(db.Integer,primary_key=True)
+    invited_by_member_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    name=db.Column(db.String(180),nullable=False)
+    company=db.Column(db.String(180))
+    activity=db.Column(db.String(180))
+    email=db.Column(db.String(180))
+    phone=db.Column(db.String(60))
+    visit_date=db.Column(db.Date,nullable=False,default=date.today,index=True)
+    status=db.Column(db.String(30),nullable=False,default="INVITED",index=True)
+    notes=db.Column(db.Text)
+    created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False,index=True)
+
+class AttendanceRecord(db.Model):
+    __tablename__="attendance_records"
+    id=db.Column(db.Integer,primary_key=True)
+    meeting_id=db.Column(db.Integer,db.ForeignKey("meetings.id"),nullable=False,index=True)
+    member_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    status=db.Column(db.String(30),nullable=False,default="PRESENT",index=True)
+    notes=db.Column(db.Text)
+    created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
+    __table_args__=(db.UniqueConstraint("meeting_id","member_id",name="uq_attendance_meeting_member"),)
+
 class Meeting(db.Model):
     __tablename__="meetings"
     id=db.Column(db.Integer,primary_key=True)
@@ -296,10 +387,27 @@ def create_app():
         if not account.is_system_admin:return None,({"error":"Accès administrateur système requis."},403)
         return account,None
 
+    def feature_enabled(key):
+        row=db.session.get(FeatureFlag,key)
+        return bool(row and row.enabled)
+
+    def require_feature(key):
+        account,_=bearer_account()
+        if not account:return None,({"error":"Authentification requise."},401)
+        if account.is_system_admin:return account,None
+        if not feature_enabled("NETWORK_MODULE"):return None,({"error":"Le module Réseau n'est pas activé."},403)
+        if not account.member.network_access_enabled:return None,({"error":"Le module Réseau n'est pas activé pour votre profil."},403)
+        if not feature_enabled(key):return None,({"error":"Cette fonctionnalité Réseau n'est pas activée."},403)
+        return account,None
+
+    def member_name(member_id):
+        m=db.session.get(Member,member_id)
+        return f"{m.first_name} {m.last_name}" if m else "—"
+
     def member_payload(m):
         membership=Membership.query.filter_by(member_id=m.id).order_by(Membership.id.desc()).first()
         account=m.user_account
-        return {"id":m.id,"firstName":m.first_name,"lastName":m.last_name,"company":m.company,"activity":m.activity,"email":m.email,"phone":m.phone,"status":membership.status if membership else None,"startDate":membership.start_date.isoformat() if membership and membership.start_date else None,"endDate":membership.end_date.isoformat() if membership and membership.end_date else None,"accountStatus":account.status if account else "NO_ACCOUNT","isSystemAdmin":bool(account and account.is_system_admin)}
+        return {"id":m.id,"firstName":m.first_name,"lastName":m.last_name,"company":m.company,"activity":m.activity,"email":m.email,"phone":m.phone,"networkType":m.network_type or "OFFICIAL_BNI","networkAccessEnabled":bool(m.network_access_enabled),"status":membership.status if membership else None,"startDate":membership.start_date.isoformat() if membership and membership.start_date else None,"endDate":membership.end_date.isoformat() if membership and membership.end_date else None,"accountStatus":account.status if account else "NO_ACCOUNT","isSystemAdmin":bool(account and account.is_system_admin)}
 
     @app.route("/api/members",methods=["GET","POST"])
     def members():
@@ -317,15 +425,407 @@ def create_app():
                 return {"error":"Un membre avec ce prénom et ce nom existe déjà.","duplicateId":duplicate.id},409
             if email and Member.query.filter(db.func.lower(Member.email)==email.lower()).first():
                 return {"error":"Un membre avec cet e-mail existe déjà."},409
-            member=Member(first_name=first,last_name=last,company=(data.get("company") or "").strip() or None,activity=(data.get("activity") or "").strip() or None,email=email,phone=(data.get("phone") or "").strip() or None)
+            network_type=(data.get("networkType") or "OFFICIAL_BNI").strip().upper()
+            if network_type not in {"OFFICIAL_BNI","OFF","TRANSITION"}:return {"error":"Type de réseau invalide."},400
+            member=Member(first_name=first,last_name=last,company=(data.get("company") or "").strip() or None,activity=(data.get("activity") or "").strip() or None,email=email,phone=(data.get("phone") or "").strip() or None,network_type=network_type,network_access_enabled=bool(data.get("networkAccessEnabled",False)))
             db.session.add(member)
             db.session.flush()
             membership=Membership(member_id=member.id,start_date=date.today(),status="ACTIVE")
             db.session.add(membership)
+            db.session.add(MemberNetworkHistory(member_id=member.id,network_type=network_type,start_date=date.today()))
             db.session.commit()
             return {"id":member.id,"firstName":member.first_name,"lastName":member.last_name,"company":member.company,"activity":member.activity,"email":member.email,"phone":member.phone,"status":"ACTIVE"},201
         rows=Member.query.order_by(Member.last_name,Member.first_name).all()
         return jsonify([member_payload(m) for m in rows])
+
+    V2_FEATURES={
+        "NETWORK_MODULE":("Module Réseau","Afficher le menu Réseau aux membres autorisés."),
+        "REFERRALS":("Recommandations","Encoder et suivre les recommandations entre membres."),
+        "BUSINESS":("Business généré","Encoder les Merci pour le Business et le chiffre d'affaires généré."),
+        "ONE_TO_ONE":("Tête-à-Tête","Encoder les rendez-vous individuels entre membres."),
+        "VISITORS":("Invités","Encoder et suivre les invités amenés au groupe."),
+        "ATTENDANCE":("Présences","Mesurer les présences, suppléants et absences."),
+        "NETWORK_OFF":("Réseau OFF","Activer les membres du réseau interne hors franchise BNI."),
+        "MEMBERSHIP_CHOICE":("Choix BNI / OFF","Permettre de choisir le réseau à l'entrée d'un nouveau membre."),
+        "ACTIVITY_SCORE":("Indice d'engagement","Calculer le score interne d'activité et les couleurs.")
+    }
+
+    @app.get("/api/system/features")
+    def system_features():
+        account,err=require_system_admin()
+        if err:return err
+        rows={x.key:x for x in FeatureFlag.query.all()}
+        return jsonify([{"key":k,"label":label,"description":desc,"enabled":bool(rows.get(k) and rows[k].enabled)} for k,(label,desc) in V2_FEATURES.items()])
+
+    @app.put("/api/system/features/<key>")
+    def system_feature_update(key):
+        account,err=require_system_admin()
+        if err:return err
+        key=key.strip().upper()
+        if key not in V2_FEATURES:return {"error":"Fonctionnalité inconnue."},404
+        data=request.get_json(silent=True) or {}
+        row=db.session.get(FeatureFlag,key)
+        if not row:
+            label,desc=V2_FEATURES[key];row=FeatureFlag(key=key,label=label,description=desc);db.session.add(row)
+        row.enabled=bool(data.get("enabled"))
+        audit(account,"FEATURE_FLAG_UPDATED","feature_flag",key,f"enabled={row.enabled}")
+        db.session.commit()
+        return {"key":key,"enabled":row.enabled}
+
+    @app.post("/api/members/<int:member_id>/network")
+    def system_change_member_network(member_id):
+        account,err=require_system_admin()
+        if err:return err
+        member=db.session.get(Member,member_id)
+        if not member:return {"error":"Membre introuvable."},404
+        data=request.get_json(silent=True) or {}
+        network_type=(data.get("networkType") or "").strip().upper()
+        if network_type not in {"OFFICIAL_BNI","OFF","TRANSITION"}:return {"error":"Type de réseau invalide."},400
+        effective=date.today()
+        if data.get("effectiveDate"):
+            try:effective=date.fromisoformat(data["effectiveDate"])
+            except ValueError:return {"error":"Date de bascule invalide."},400
+        current=MemberNetworkHistory.query.filter_by(member_id=member.id,end_date=None).order_by(MemberNetworkHistory.start_date.desc()).first()
+        if current and current.network_type==network_type:
+            member.network_type=network_type;db.session.commit();return member_payload(member)
+        if current:current.end_date=effective-timedelta(days=1)
+        member.network_type=network_type
+        db.session.add(MemberNetworkHistory(member_id=member.id,network_type=network_type,start_date=effective,changed_by_account_id=account.id))
+        audit(account,"MEMBER_NETWORK_CHANGED","member",member.id,f"{current.network_type if current else 'UNKNOWN'}->{network_type}; effective={effective.isoformat()}")
+        db.session.commit()
+        return member_payload(member)
+
+    @app.get("/api/members/<int:member_id>/network-history")
+    def member_network_history(member_id):
+        _,err=require_admin()
+        if err:return err
+        rows=MemberNetworkHistory.query.filter_by(member_id=member_id).order_by(MemberNetworkHistory.start_date.desc(),MemberNetworkHistory.id.desc()).all()
+        return jsonify([{"id":x.id,"networkType":x.network_type,"startDate":x.start_date.isoformat(),"endDate":x.end_date.isoformat() if x.end_date else None} for x in rows])
+
+    REFERRAL_STATUSES={"PENDING","NO_FOLLOW_UP","WON","LOST"}
+
+    @app.get("/api/network/config")
+    def network_config():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        rows={x.key:x for x in FeatureFlag.query.all()}
+        return {"features":{k:bool(rows.get(k) and rows[k].enabled) for k in V2_FEATURES},"networkType":account.member.network_type or "OFFICIAL_BNI","networkAccessEnabled":bool(account.member.network_access_enabled),"networkModuleEnabled":bool(rows.get("NETWORK_MODULE") and rows["NETWORK_MODULE"].enabled),"isSystemAdmin":bool(account.is_system_admin)}
+
+    @app.get("/api/network/members")
+    def network_members():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        rows=Member.query.join(Membership,Membership.member_id==Member.id).filter(Membership.status=="ACTIVE").order_by(Member.last_name,Member.first_name).all()
+        if not account.is_system_admin:rows=[m for m in rows if m.network_access_enabled]
+        seen=set();out=[]
+        for m in rows:
+            if m.id in seen:continue
+            seen.add(m.id);out.append({"id":m.id,"name":f"{m.first_name} {m.last_name}","company":m.company,"activity":m.activity,"networkType":m.network_type or "OFFICIAL_BNI"})
+        return jsonify(out)
+
+    def referral_payload(x):
+        return {"id":x.id,"fromMemberId":x.from_member_id,"fromMember":member_name(x.from_member_id),"toMemberId":x.to_member_id,"toMember":member_name(x.to_member_id),"contactName":x.contact_name,"company":x.company,"contactEmail":x.contact_email,"contactPhone":x.contact_phone,"notes":x.notes,"status":x.status,"estimatedValue":float(x.estimated_value) if x.estimated_value is not None else None,"closedAt":x.closed_at.isoformat() if x.closed_at else None,"businessAmount":float((BusinessThanks.query.filter_by(referral_id=x.id).first().amount)) if BusinessThanks.query.filter_by(referral_id=x.id).first() else None,"createdAt":x.created_at.isoformat(),"updatedAt":x.updated_at.isoformat() if x.updated_at else None}
+
+    @app.route("/api/network/referrals",methods=["GET","POST"])
+    def network_referrals():
+        account,err=require_feature("REFERRALS")
+        if err:return err
+        if request.method=="POST":
+            data=request.get_json(silent=True) or {}
+            try:to_id=int(data.get("toMemberId"))
+            except (TypeError,ValueError):return {"error":"Membre destinataire requis."},400
+            if to_id==account.member_id:return {"error":"Vous ne pouvez pas vous envoyer une recommandation à vous-même."},400
+            if not db.session.get(Member,to_id):return {"error":"Membre destinataire introuvable."},404
+            contact=(data.get("contactName") or "").strip()
+            if not contact:return {"error":"Le nom du contact recommandé est obligatoire."},400
+            estimated=None
+            if str(data.get("estimatedValue") or "").strip():
+                try:estimated=float(data["estimatedValue"])
+                except (TypeError,ValueError):return {"error":"Valeur estimée invalide."},400
+            x=Referral(from_member_id=account.member_id,to_member_id=to_id,contact_name=contact,company=(data.get("company") or "").strip() or None,contact_email=(data.get("contactEmail") or "").strip() or None,contact_phone=(data.get("contactPhone") or "").strip() or None,notes=(data.get("notes") or "").strip() or None,estimated_value=estimated,status="PENDING")
+            db.session.add(x);db.session.flush()
+            db.session.add(ReferralStatusHistory(referral_id=x.id,status="PENDING",note="Recommandation créée — pas encore contactée",changed_by_member_id=account.member_id))
+            notify(to_id,"REFERRAL_RECEIVED","Nouvelle recommandation",f"{account.member.first_name} {account.member.last_name} vous a transmis une recommandation : {contact}.","network")
+            audit(account,"REFERRAL_CREATED","referral",x.id,f"to={to_id}")
+            db.session.commit()
+            referral_email(x)
+            return referral_payload(x),201
+        q=Referral.query
+        scope=request.args.get("scope","mine")
+        if scope!="all" or not account_payload(account)["isAdmin"]:
+            q=q.filter(db.or_(Referral.from_member_id==account.member_id,Referral.to_member_id==account.member_id))
+        return jsonify([referral_payload(x) for x in q.order_by(Referral.created_at.desc()).limit(500).all()])
+
+    @app.patch("/api/network/referrals/<int:referral_id>")
+    def network_referral_update(referral_id):
+        account,err=require_feature("REFERRALS")
+        if err:return err
+        x=db.session.get(Referral,referral_id)
+        if not x:return {"error":"Recommandation introuvable."},404
+        if account.member_id!=x.to_member_id and not account_payload(account)["isAdmin"]:return {"error":"Le suivi doit être effectué par le membre qui a reçu la recommandation."},403
+        data=request.get_json(silent=True) or {}
+        status=(data.get("status") or "").strip().upper()
+        if status not in REFERRAL_STATUSES:return {"error":"Statut invalide."},400
+        note=(data.get("note") or "").strip() or None
+        if status=="WON":
+            try:amount=float(data.get("amount"))
+            except (TypeError,ValueError):return {"error":"Encodez le chiffre d'affaires généré pour clôturer une affaire gagnée."},400
+            if amount<=0:return {"error":"Le chiffre d'affaires doit être supérieur à 0."},400
+            existing=BusinessThanks.query.filter_by(referral_id=x.id).first()
+            if not existing:
+                existing=BusinessThanks(from_member_id=x.to_member_id,credited_member_id=x.from_member_id,referral_id=x.id,amount=amount,business_date=date.today(),notes=note)
+                db.session.add(existing)
+            else:
+                existing.amount=amount;existing.notes=note
+        x.status=status
+        x.closed_at=datetime.utcnow() if status in {"NO_FOLLOW_UP","WON","LOST"} else None
+        db.session.add(ReferralStatusHistory(referral_id=x.id,status=status,note=note,changed_by_member_id=account.member_id))
+        labels={"PENDING":"Pas encore contacté","NO_FOLLOW_UP":"Contacté — pas de suite","WON":"Affaire gagnée","LOST":"Marché perdu"}
+        notify(x.from_member_id,"REFERRAL_UPDATED","Suivi de recommandation",f"{x.contact_name} : {labels.get(status,status)}.","network")
+        audit(account,"REFERRAL_STATUS_UPDATED","referral",x.id,status)
+        db.session.commit()
+        return referral_payload(x)
+
+    @app.get("/api/network/referrals/<int:referral_id>/history")
+    def network_referral_history(referral_id):
+        account,err=require_feature("REFERRALS")
+        if err:return err
+        x=db.session.get(Referral,referral_id)
+        if not x:return {"error":"Recommandation introuvable."},404
+        if account.member_id not in {x.from_member_id,x.to_member_id} and not account_payload(account)["isAdmin"]:return {"error":"Accès refusé."},403
+        rows=ReferralStatusHistory.query.filter_by(referral_id=x.id).order_by(ReferralStatusHistory.created_at.desc()).all()
+        return jsonify([{"id":h.id,"status":h.status,"note":h.note,"changedBy":member_name(h.changed_by_member_id),"createdAt":h.created_at.isoformat()} for h in rows])
+
+    def business_payload(x):
+        return {"id":x.id,"fromMemberId":x.from_member_id,"fromMember":member_name(x.from_member_id),"creditedMemberId":x.credited_member_id,"creditedMember":member_name(x.credited_member_id),"referralId":x.referral_id,"amount":float(x.amount),"notes":x.notes,"businessDate":x.business_date.isoformat(),"createdAt":x.created_at.isoformat()}
+
+    @app.route("/api/network/business",methods=["GET","POST"])
+    def network_business():
+        account,err=require_feature("BUSINESS")
+        if err:return err
+        if request.method=="POST":
+            data=request.get_json(silent=True) or {}
+            try:credited=int(data.get("creditedMemberId"));amount=float(data.get("amount"))
+            except (TypeError,ValueError):return {"error":"Membre et montant valides requis."},400
+            if credited==account.member_id:return {"error":"Le Merci pour le Business doit créditer un autre membre."},400
+            if amount<=0:return {"error":"Le montant doit être supérieur à 0."},400
+            if not db.session.get(Member,credited):return {"error":"Membre introuvable."},404
+            business_date=date.today()
+            if data.get("businessDate"):
+                try:business_date=date.fromisoformat(data["businessDate"])
+                except ValueError:return {"error":"Date invalide."},400
+            referral_id=None
+            if data.get("referralId"):
+                try:referral_id=int(data["referralId"])
+                except (TypeError,ValueError):return {"error":"Recommandation invalide."},400
+            x=BusinessThanks(from_member_id=account.member_id,credited_member_id=credited,referral_id=referral_id,amount=amount,business_date=business_date,notes=(data.get("notes") or "").strip() or None)
+            db.session.add(x);db.session.flush()
+            notify(credited,"BUSINESS_THANKS","Merci pour le Business",f"{account.member.first_name} {account.member.last_name} vous crédite de {amount:,.2f} € de business généré.","network")
+            audit(account,"BUSINESS_THANKS_CREATED","business_thanks",x.id,f"credited={credited};amount={amount}")
+            db.session.commit()
+            return business_payload(x),201
+        q=BusinessThanks.query
+        if request.args.get("scope")!="all" or not account_payload(account)["isAdmin"]:
+            q=q.filter(db.or_(BusinessThanks.from_member_id==account.member_id,BusinessThanks.credited_member_id==account.member_id))
+        return jsonify([business_payload(x) for x in q.order_by(BusinessThanks.business_date.desc(),BusinessThanks.id.desc()).limit(500).all()])
+
+    @app.route("/api/network/one-to-ones",methods=["GET","POST"])
+    def network_one_to_ones():
+        account,err=require_feature("ONE_TO_ONE")
+        if err:return err
+        if request.method=="POST":
+            data=request.get_json(silent=True) or {}
+            try:partner=int(data.get("partnerMemberId"))
+            except (TypeError,ValueError):return {"error":"Membre partenaire requis."},400
+            if partner==account.member_id:return {"error":"Choisissez un autre membre."},400
+            if not db.session.get(Member,partner):return {"error":"Membre introuvable."},404
+            d=date.today()
+            if data.get("meetingDate"):
+                try:d=date.fromisoformat(data["meetingDate"])
+                except ValueError:return {"error":"Date invalide."},400
+            duration=None
+            if data.get("durationMinutes"):
+                try:duration=int(data["durationMinutes"])
+                except (TypeError,ValueError):return {"error":"Durée invalide."},400
+            x=OneToOne(member_a_id=account.member_id,member_b_id=partner,meeting_date=d,duration_minutes=duration,notes=(data.get("notes") or "").strip() or None,created_by_member_id=account.member_id)
+            db.session.add(x);db.session.flush()
+            notify(partner,"ONE_TO_ONE_RECORDED","Tête-à-Tête encodé",f"{account.member.first_name} {account.member.last_name} a enregistré un Tête-à-Tête avec vous.","network")
+            audit(account,"ONE_TO_ONE_CREATED","one_to_one",x.id,f"partner={partner}")
+            db.session.commit()
+            return {"id":x.id,"partner":member_name(partner),"meetingDate":d.isoformat(),"durationMinutes":duration,"notes":x.notes},201
+        q=OneToOne.query
+        if request.args.get("scope")!="all" or not account_payload(account)["isAdmin"]:
+            q=q.filter(db.or_(OneToOne.member_a_id==account.member_id,OneToOne.member_b_id==account.member_id))
+        rows=q.order_by(OneToOne.meeting_date.desc(),OneToOne.id.desc()).limit(500).all()
+        return jsonify([{"id":x.id,"memberAId":x.member_a_id,"memberA":member_name(x.member_a_id),"memberBId":x.member_b_id,"memberB":member_name(x.member_b_id),"meetingDate":x.meeting_date.isoformat(),"durationMinutes":x.duration_minutes,"notes":x.notes} for x in rows])
+
+    @app.route("/api/network/visitors",methods=["GET","POST"])
+    def network_visitors():
+        account,err=require_feature("VISITORS")
+        if err:return err
+        if request.method=="POST":
+            data=request.get_json(silent=True) or {}
+            name=(data.get("name") or "").strip()
+            if not name:return {"error":"Nom de l'invité obligatoire."},400
+            d=date.today()
+            if data.get("visitDate"):
+                try:d=date.fromisoformat(data["visitDate"])
+                except ValueError:return {"error":"Date invalide."},400
+            x=NetworkVisitor(invited_by_member_id=account.member_id,name=name,company=(data.get("company") or "").strip() or None,activity=(data.get("activity") or "").strip() or None,email=(data.get("email") or "").strip() or None,phone=(data.get("phone") or "").strip() or None,visit_date=d,status="INVITED",notes=(data.get("notes") or "").strip() or None)
+            db.session.add(x);db.session.flush();audit(account,"VISITOR_CREATED","network_visitor",x.id,name);db.session.commit()
+            return {"id":x.id,"name":x.name,"company":x.company,"activity":x.activity,"visitDate":x.visit_date.isoformat(),"status":x.status},201
+        q=NetworkVisitor.query
+        if request.args.get("scope")!="all" or not account_payload(account)["isAdmin"]:q=q.filter_by(invited_by_member_id=account.member_id)
+        rows=q.order_by(NetworkVisitor.visit_date.desc(),NetworkVisitor.id.desc()).limit(500).all()
+        return jsonify([{"id":x.id,"invitedByMemberId":x.invited_by_member_id,"invitedBy":member_name(x.invited_by_member_id),"name":x.name,"company":x.company,"activity":x.activity,"email":x.email,"phone":x.phone,"visitDate":x.visit_date.isoformat(),"status":x.status,"notes":x.notes} for x in rows])
+
+    @app.patch("/api/network/visitors/<int:visitor_id>")
+    def network_visitor_update(visitor_id):
+        account,err=require_feature("VISITORS")
+        if err:return err
+        x=db.session.get(NetworkVisitor,visitor_id)
+        if not x:return {"error":"Invité introuvable."},404
+        if x.invited_by_member_id!=account.member_id and not account_payload(account)["isAdmin"]:return {"error":"Accès refusé."},403
+        status=(request.get_json(silent=True) or {}).get("status","").upper()
+        if status not in {"INVITED","ATTENDED","FOLLOW_UP","JOINED","DECLINED"}:return {"error":"Statut invalide."},400
+        x.status=status;db.session.commit();return {"id":x.id,"status":x.status}
+
+    @app.put("/api/network/attendance/<int:meeting_id>/<int:member_id>")
+    def network_attendance_update(meeting_id,member_id):
+        account,err=require_admin()
+        if err:return err
+        if not feature_enabled("ATTENDANCE") and not account.is_system_admin:return {"error":"Fonctionnalité non activée."},403
+        if not db.session.get(Meeting,meeting_id) or not db.session.get(Member,member_id):return {"error":"Réunion ou membre introuvable."},404
+        data=request.get_json(silent=True) or {};status=(data.get("status") or "").upper()
+        if status not in {"PRESENT","SUBSTITUTE","ABSENT","EXCUSED"}:return {"error":"Statut de présence invalide."},400
+        x=AttendanceRecord.query.filter_by(meeting_id=meeting_id,member_id=member_id).first()
+        if not x:x=AttendanceRecord(meeting_id=meeting_id,member_id=member_id);db.session.add(x)
+        x.status=status;x.notes=(data.get("notes") or "").strip() or None
+        audit(account,"ATTENDANCE_UPDATED","attendance",f"{meeting_id}:{member_id}",status);db.session.commit()
+        return {"meetingId":meeting_id,"memberId":member_id,"status":status}
+
+    @app.get("/api/network/stats")
+    def network_stats():
+        account,err=require_feature("ACTIVITY_SCORE")
+        if err:return err
+        member_id=account.member_id
+        if request.args.get("memberId") and account_payload(account)["isAdmin"]:
+            try:member_id=int(request.args["memberId"])
+            except ValueError:return {"error":"Membre invalide."},400
+        months=6
+        try:months=max(1,min(24,int(request.args.get("months",6))))
+        except ValueError:months=6
+        today=date.today()
+        start=(today-timedelta(days=months*30))
+        refs_given=Referral.query.filter(Referral.from_member_id==member_id,Referral.created_at>=start).count()
+        refs_received=Referral.query.filter(Referral.to_member_id==member_id,Referral.created_at>=start).count()
+        refs_won=Referral.query.filter(Referral.to_member_id==member_id,Referral.status=="WON",Referral.created_at>=start).count()
+        one_to_ones=OneToOne.query.filter(db.or_(OneToOne.member_a_id==member_id,OneToOne.member_b_id==member_id),OneToOne.meeting_date>=start).count()
+        visitors=NetworkVisitor.query.filter(NetworkVisitor.invited_by_member_id==member_id,NetworkVisitor.visit_date>=start).count()
+        generated=float(db.session.query(db.func.coalesce(db.func.sum(BusinessThanks.amount),0)).filter(BusinessThanks.credited_member_id==member_id,BusinessThanks.business_date>=start).scalar() or 0)
+        received=float(db.session.query(db.func.coalesce(db.func.sum(BusinessThanks.amount),0)).filter(BusinessThanks.from_member_id==member_id,BusinessThanks.business_date>=start).scalar() or 0)
+        attendance=AttendanceRecord.query.join(Meeting,Meeting.id==AttendanceRecord.meeting_id).filter(AttendanceRecord.member_id==member_id,Meeting.date>=start).all()
+        counted=[a for a in attendance if a.status in {"PRESENT","SUBSTITUTE","ABSENT"}]
+        attendance_rate=100.0 if not counted else round(100*sum(1 for a in counted if a.status in {"PRESENT","SUBSTITUTE"})/len(counted),1)
+        monthly=max(1,months)
+        ref_score=min(35,35*(refs_given/monthly)/5)
+        oto_score=min(25,25*(one_to_ones/monthly)/2)
+        visitor_score=min(20,20*(visitors/monthly))
+        attendance_score=min(20,20*attendance_rate/100)
+        score=round(ref_score+oto_score+visitor_score+attendance_score)
+        color="GREEN" if score>=70 else "YELLOW" if score>=50 else "RED" if score>=30 else "GREY"
+        conversion=round(100*refs_won/refs_received,1) if refs_received else 0
+        estimated_given=float(db.session.query(db.func.coalesce(db.func.sum(Referral.estimated_value),0)).filter(Referral.from_member_id==member_id,Referral.created_at>=start).scalar() or 0)
+        estimated_received=float(db.session.query(db.func.coalesce(db.func.sum(Referral.estimated_value),0)).filter(Referral.to_member_id==member_id,Referral.created_at>=start).scalar() or 0)
+        avg_won_value=round(received/refs_won,2) if refs_won else 0
+        return {"memberId":member_id,"member":member_name(member_id),"months":months,"periodStart":start.isoformat(),"periodEnd":today.isoformat(),"referralsGiven":refs_given,"referralsReceived":refs_received,"referralsWon":refs_won,"conversionRate":conversion,"oneToOnes":one_to_ones,"visitors":visitors,"businessGenerated":generated,"businessReceived":received,"estimatedValueGiven":estimated_given,"estimatedValueReceived":estimated_received,"averageWonReferralValue":avg_won_value,"attendanceRate":attendance_rate,"score":score,"scoreColor":color,"scoreBreakdown":{"referrals":round(ref_score,1),"oneToOnes":round(oto_score,1),"visitors":round(visitor_score,1),"attendance":round(attendance_score,1)},"targets":{"referralsPerMonth":5,"oneToOnesPerMonth":2,"visitorsPerMonth":1,"absenceTarget":0}}
+
+    def contribution_window(start_date,end_date):
+        members=Member.query.all()
+        rows=[]
+        start_dt=datetime.combine(start_date,datetime.min.time());end_dt=datetime.combine(end_date+timedelta(days=1),datetime.min.time())
+        for m in members:
+            refs=Referral.query.filter(Referral.from_member_id==m.id,Referral.created_at>=start_dt,Referral.created_at<end_dt).count()
+            business=float(db.session.query(db.func.coalesce(db.func.sum(BusinessThanks.amount),0)).filter(BusinessThanks.credited_member_id==m.id,BusinessThanks.business_date>=start_date,BusinessThanks.business_date<=end_date).scalar() or 0)
+            visitors=NetworkVisitor.query.filter(NetworkVisitor.invited_by_member_id==m.id,NetworkVisitor.visit_date>=start_date,NetworkVisitor.visit_date<=end_date).count()
+            otos=OneToOne.query.filter(db.or_(OneToOne.member_a_id==m.id,OneToOne.member_b_id==m.id),OneToOne.meeting_date>=start_date,OneToOne.meeting_date<=end_date).count()
+            rows.append({"memberId":m.id,"member":f"{m.first_name} {m.last_name}","referrals":refs,"businessGenerated":business,"visitors":visitors,"oneToOnes":otos})
+        def best(field):
+            ranked=sorted(rows,key=lambda x:x[field],reverse=True)
+            return ranked[0] if ranked and ranked[0][field]>0 else None
+        return {"startDate":start_date.isoformat(),"endDate":end_date.isoformat(),"bestReferrals":best("referrals"),"bestBusiness":best("businessGenerated"),"bestVisitors":best("visitors"),"bestOneToOnes":best("oneToOnes")}
+
+    @app.get("/api/network/contributors")
+    def network_contributors():
+        account,err=require_feature("ACTIVITY_SCORE")
+        if err:return err
+        today=date.today()
+        period=request.args.get("period","week")
+        if period=="month":
+            start=today.replace(day=1)
+            next_month=(start.replace(day=28)+timedelta(days=4)).replace(day=1)
+            end=min(today,next_month-timedelta(days=1))
+        else:
+            meetings=Meeting.query.filter(Meeting.date<=today,Meeting.type!="NO_MEETING").order_by(Meeting.date.desc()).limit(2).all()
+            if len(meetings)>=2:
+                end=meetings[0].date-timedelta(days=1);start=meetings[1].date
+            elif meetings:
+                start=meetings[0].date;end=today
+            else:
+                start=today-timedelta(days=7);end=today
+        return contribution_window(start,end)
+
+    @app.get("/api/network/hub-summary")
+    def network_hub_summary():
+        account,err=require_feature("ACTIVITY_SCORE")
+        if err:return err
+        mandate=active_mandate()
+        if mandate:
+            start,end=mandate.start_date,mandate.end_date
+            name=mandate.name
+        else:
+            start=date.today().replace(month=1,day=1);end=date.today();name="Période en cours"
+        total=float(db.session.query(db.func.coalesce(db.func.sum(BusinessThanks.amount),0)).filter(BusinessThanks.business_date>=start,BusinessThanks.business_date<=end).scalar() or 0)
+        referrals=Referral.query.filter(Referral.created_at>=datetime.combine(start,datetime.min.time()),Referral.created_at<datetime.combine(end+timedelta(days=1),datetime.min.time())).count()
+        won=Referral.query.filter(Referral.status=="WON",Referral.created_at>=datetime.combine(start,datetime.min.time()),Referral.created_at<datetime.combine(end+timedelta(days=1),datetime.min.time())).count()
+        return {"mandate":name,"startDate":start.isoformat(),"endDate":end.isoformat(),"businessTotal":total,"referrals":referrals,"wonReferrals":won}
+
+    @app.get("/api/network/leaderboard")
+    def network_leaderboard():
+        account,err=require_admin()
+        if err:return err
+        if not account.is_system_admin and not feature_enabled("NETWORK_MODULE"):return {"error":"Le module Réseau n'est pas activé."},403
+        months=max(1,min(24,int(request.args.get("months",6) or 6)))
+        today=date.today();start=today-timedelta(days=months*30)
+        rows=[]
+        active=Member.query.join(Membership,Membership.member_id==Member.id).filter(Membership.status=="ACTIVE").all()
+        seen=set()
+        for m in active:
+            if m.id in seen:continue
+            seen.add(m.id)
+            refs=Referral.query.filter(Referral.from_member_id==m.id,Referral.created_at>=start).count()
+            otos=OneToOne.query.filter(db.or_(OneToOne.member_a_id==m.id,OneToOne.member_b_id==m.id),OneToOne.meeting_date>=start).count()
+            visitors=NetworkVisitor.query.filter(NetworkVisitor.invited_by_member_id==m.id,NetworkVisitor.visit_date>=start).count()
+            generated=float(db.session.query(db.func.coalesce(db.func.sum(BusinessThanks.amount),0)).filter(BusinessThanks.credited_member_id==m.id,BusinessThanks.business_date>=start).scalar() or 0)
+            att=AttendanceRecord.query.join(Meeting,Meeting.id==AttendanceRecord.meeting_id).filter(AttendanceRecord.member_id==m.id,Meeting.date>=start).all()
+            counted=[a for a in att if a.status in {"PRESENT","SUBSTITUTE","ABSENT"}];rate=100 if not counted else 100*sum(1 for a in counted if a.status in {"PRESENT","SUBSTITUTE"})/len(counted)
+            score=round(min(35,35*(refs/months)/5)+min(25,25*(otos/months)/2)+min(20,20*(visitors/months))+min(20,20*rate/100))
+            rows.append({"memberId":m.id,"member":f"{m.first_name} {m.last_name}","company":m.company,"networkType":m.network_type or "OFFICIAL_BNI","score":score,"referralsGiven":refs,"oneToOnes":otos,"visitors":visitors,"businessGenerated":generated})
+        rows.sort(key=lambda x:(x["score"],x["businessGenerated"],x["referralsGiven"]),reverse=True)
+        for i,x in enumerate(rows,1):x["rank"]=i
+        return jsonify(rows)
+
+    @app.put("/api/members/<int:member_id>/network-access")
+    def system_member_network_access(member_id):
+        account,err=require_system_admin()
+        if err:return err
+        member=db.session.get(Member,member_id)
+        if not member:return {"error":"Membre introuvable."},404
+        data=request.get_json(silent=True) or {}
+        member.network_access_enabled=bool(data.get("enabled"))
+        audit(account,"MEMBER_NETWORK_ACCESS_UPDATED","member",member.id,f"enabled={member.network_access_enabled}")
+        db.session.commit()
+        return member_payload(member)
 
     @app.post("/api/members/<int:member_id>/password")
     def admin_set_member_password(member_id):
@@ -600,7 +1100,7 @@ Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet e-mai
             role_ids=[a.role_id for a in assignments]
             if role_ids: roles=[r.name for r in Role.query.filter(Role.id.in_(role_ids)).all()]
         admin=bool(account.is_system_admin or any(r.lower().strip() in {"président","president","vice-président","vice president","vice-president","secrétaire trésorier","secretaire tresorier","secrétaire-trésorier","secretaire-tresorier","trésorier","tresorier"} for r in roles))
-        return {"id":account.member.id,"firstName":account.member.first_name,"lastName":account.member.last_name,"email":account.email,"roles":roles,"isAdmin":admin,"isSystemAdmin":bool(account.is_system_admin)}
+        return {"id":account.member.id,"firstName":account.member.first_name,"lastName":account.member.last_name,"email":account.email,"roles":roles,"isAdmin":admin,"isSystemAdmin":bool(account.is_system_admin),"networkType":account.member.network_type or "OFFICIAL_BNI","networkAccessEnabled":bool(account.member.network_access_enabled),"networkModuleEnabled":bool(feature_enabled("NETWORK_MODULE"))}
 
     def bearer_account():
         header=request.headers.get("Authorization","")
@@ -1266,6 +1766,48 @@ Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet e-mai
     REQUEST_ALLOWED_EXTENSIONS={"pdf","png","jpg","jpeg","webp","ppt","pptx","mp4","mov","m4v"}
     REQUEST_MAX_FILE_SIZE=5*1024*1024
 
+    def send_simple_email(to_email,subject,body):
+        host=os.getenv("SMTP_HOST","").strip();sender=os.getenv("SMTP_FROM","").strip()
+        if not host or not sender or not to_email:return False
+        msg=EmailMessage();msg["Subject"]=subject;msg["From"]=sender;msg["To"]=to_email;msg.set_content(body)
+        port=int(os.getenv("SMTP_PORT","587"));user=os.getenv("SMTP_USER","").strip();password=os.getenv("SMTP_PASSWORD","")
+        use_ssl=os.getenv("SMTP_SSL","false").lower() in {"1","true","yes"}
+        smtp=(smtplib.SMTP_SSL(host,port,timeout=15) if use_ssl else smtplib.SMTP(host,port,timeout=15))
+        try:
+            if not use_ssl and os.getenv("SMTP_STARTTLS","true").lower() in {"1","true","yes"}:smtp.starttls()
+            if user:smtp.login(user,password)
+            smtp.send_message(msg);return True
+        except Exception:
+            app.logger.exception("Unable to send network email")
+            return False
+        finally:
+            try:smtp.quit()
+            except Exception:pass
+
+    def referral_email(x):
+        target=db.session.get(Member,x.to_member_id);source=db.session.get(Member,x.from_member_id)
+        if not target or not target.email:return False
+        app_url=os.getenv("APP_URL","").strip().rstrip("/")
+        link=(app_url+"?network=referrals") if app_url else ""
+        body=f"""Bonjour {target.first_name},
+
+{source.first_name} {source.last_name} vous envoie une recommandation.
+
+Contact : {x.contact_name}
+Téléphone : {x.contact_phone or "—"}
+E-mail : {x.contact_email or "—"}
+Société : {x.company or "—"}
+
+Objet / contexte :
+{x.notes or "—"}
+
+Merci d'assurer le suivi dans le Hub :
+{link}
+
+Statut initial : pas encore contacté.
+"""
+        return send_simple_email(target.email,f"Hub — {source.first_name} {source.last_name} vous envoie une recommandation",body)
+
     def send_request_email(x,account,targets):
         host=os.getenv("SMTP_HOST","").strip()
         sender=os.getenv("SMTP_FROM","").strip()
@@ -1684,11 +2226,24 @@ Cette demande est également disponible dans BNI Soignies Hub.""")
         db.create_all()
         # Temporary lightweight migration until Alembic is introduced.
         db.session.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS is_system_admin BOOLEAN NOT NULL DEFAULT FALSE"))
+        db.session.execute(text("ALTER TABLE members ADD COLUMN IF NOT EXISTS network_type VARCHAR(30) NOT NULL DEFAULT 'OFFICIAL_BNI'"))
+        db.session.execute(text("ALTER TABLE members ADD COLUMN IF NOT EXISTS network_access_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
+        db.session.execute(text("ALTER TABLE referrals ADD COLUMN IF NOT EXISTS closed_at TIMESTAMP"))
+        db.session.execute(text("CREATE INDEX IF NOT EXISTS ix_members_network_type ON members(network_type)"))
         db.session.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS password_reset_token VARCHAR(128)"))
         db.session.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS password_reset_expires_at TIMESTAMP"))
         db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_name VARCHAR(255)"))
         db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_type VARCHAR(120)"))
         db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_data BYTEA"))
+        db.session.commit()
+        enabled_by_default={"REFERRALS","BUSINESS","ONE_TO_ONE","VISITORS","ATTENDANCE","ACTIVITY_SCORE"}
+        for key,(label,desc) in V2_FEATURES.items():
+            row=db.session.get(FeatureFlag,key)
+            if not row:db.session.add(FeatureFlag(key=key,label=label,description=desc,enabled=(key in enabled_by_default)))
+        db.session.commit()
+        for m in Member.query.all():
+            if not MemberNetworkHistory.query.filter_by(member_id=m.id).first():
+                db.session.add(MemberNetworkHistory(member_id=m.id,network_type=m.network_type or "OFFICIAL_BNI",start_date=(m.created_at.date() if m.created_at else date.today())))
         db.session.commit()
         for code,name in [("SETUP","Préparation"),("RECEPTION","Accueil des invités"),("FOLLOWUP","Suivi des invités")]:
             duty=Duty.query.filter_by(code=code).first()
