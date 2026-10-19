@@ -430,11 +430,14 @@ def create_app():
             member=Member(first_name=first,last_name=last,company=(data.get("company") or "").strip() or None,activity=(data.get("activity") or "").strip() or None,email=email,phone=(data.get("phone") or "").strip() or None,network_type=network_type,network_access_enabled=bool(data.get("networkAccessEnabled",False)))
             db.session.add(member)
             db.session.flush()
-            membership=Membership(member_id=member.id,start_date=date.today(),status="ACTIVE")
+            member_status=(data.get("status") or "ACTIVE").strip().upper()
+            if member_status not in {"ACTIVE","ONBOARDING","FORMER","OFF"}:return {"error":"Statut membre invalide."},400
+            if member_status=="OFF":member.network_type="OFF"
+            membership=Membership(member_id=member.id,start_date=date.today(),status=member_status)
             db.session.add(membership)
-            db.session.add(MemberNetworkHistory(member_id=member.id,network_type=network_type,start_date=date.today()))
+            db.session.add(MemberNetworkHistory(member_id=member.id,network_type=member.network_type,start_date=date.today()))
             db.session.commit()
-            return {"id":member.id,"firstName":member.first_name,"lastName":member.last_name,"company":member.company,"activity":member.activity,"email":member.email,"phone":member.phone,"status":"ACTIVE"},201
+            return member_payload(member),201
         rows=Member.query.order_by(Member.last_name,Member.first_name).all()
         return jsonify([member_payload(m) for m in rows])
 
@@ -515,7 +518,7 @@ def create_app():
     def network_members():
         account,_=bearer_account()
         if not account:return {"error":"Authentification requise."},401
-        rows=Member.query.join(Membership,Membership.member_id==Member.id).filter(Membership.status=="ACTIVE").order_by(Member.last_name,Member.first_name).all()
+        rows=Member.query.join(Membership,Membership.member_id==Member.id).filter(Membership.status.in_(["ACTIVE","ONBOARDING","OFF"])).order_by(Member.last_name,Member.first_name).all()
         if not account.is_system_admin:rows=[m for m in rows if m.network_access_enabled]
         seen=set();out=[]
         for m in rows:
@@ -798,7 +801,7 @@ def create_app():
         months=max(1,min(24,int(request.args.get("months",6) or 6)))
         today=date.today();start=today-timedelta(days=months*30)
         rows=[]
-        active=Member.query.join(Membership,Membership.member_id==Member.id).filter(Membership.status=="ACTIVE").all()
+        active=Member.query.join(Membership,Membership.member_id==Member.id).filter(Membership.status.in_(["ACTIVE","ONBOARDING","OFF"])).all()
         seen=set()
         for m in active:
             if m.id in seen:continue
@@ -870,7 +873,16 @@ def create_app():
         membership=Membership.query.filter_by(member_id=member.id).order_by(Membership.id.desc()).first()
         if not membership:
             membership=Membership(member_id=member.id,status="ACTIVE");db.session.add(membership)
-        if "status" in data:membership.status=data["status"]
+        if "status" in data:
+            new_status=(data["status"] or "").strip().upper()
+            if new_status not in {"ACTIVE","ONBOARDING","FORMER","OFF"}:return {"error":"Statut membre invalide."},400
+            membership.status=new_status
+            if new_status=="OFF" and member.network_type!="OFF":
+                current=MemberNetworkHistory.query.filter_by(member_id=member.id,end_date=None).order_by(MemberNetworkHistory.start_date.desc()).first()
+                if current:current.end_date=date.today()-timedelta(days=1)
+                member.network_type="OFF"
+                db.session.add(MemberNetworkHistory(member_id=member.id,network_type="OFF",start_date=date.today()))
+
         if "startDate" in data:membership.start_date=date.fromisoformat(data["startDate"]) if data["startDate"] else None
         if "endDate" in data:membership.end_date=date.fromisoformat(data["endDate"]) if data["endDate"] else None
         db.session.commit()
@@ -938,7 +950,9 @@ def create_app():
                 try:membership.start_date=date.fromisoformat(str(item["startDate"])[:10])
                 except ValueError:pass
             status=(item.get("status") or "").strip().upper()
-            if status in {"ACTIVE","ONBOARDING","FORMER"}:membership.status=status
+            if status in {"ACTIVE","ONBOARDING","FORMER","OFF"}:
+                membership.status=status
+                if status=="OFF":member.network_type="OFF"
         account,_=bearer_account()
         log=ImportLog(account_id=account.id,filename=(data.get("filename") or "import.xlsx")[:255],created_count=created,updated_count=updated,error_count=0)
         db.session.add(log)
