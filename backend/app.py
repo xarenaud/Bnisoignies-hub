@@ -20,6 +20,7 @@ class Member(db.Model):
     activity=db.Column(db.String(180))
     email=db.Column(db.String(180),index=True)
     phone=db.Column(db.String(50))
+    network_type=db.Column(db.String(30),nullable=False,default="OFFICIAL_BNI",index=True)
     created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
 
 class UserAccount(db.Model):
@@ -54,6 +55,24 @@ class Membership(db.Model):
     end_date=db.Column(db.Date)
     status=db.Column(db.String(30),nullable=False,default="ACTIVE")
     member=db.relationship("Member",backref="memberships")
+
+class MemberNetworkHistory(db.Model):
+    __tablename__="member_network_history"
+    id=db.Column(db.Integer,primary_key=True)
+    member_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    network_type=db.Column(db.String(30),nullable=False,index=True)
+    start_date=db.Column(db.Date,nullable=False,default=date.today)
+    end_date=db.Column(db.Date)
+    changed_by_account_id=db.Column(db.Integer,db.ForeignKey("user_accounts.id"),nullable=True,index=True)
+    created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
+
+class FeatureFlag(db.Model):
+    __tablename__="feature_flags"
+    key=db.Column(db.String(80),primary_key=True)
+    label=db.Column(db.String(180),nullable=False)
+    description=db.Column(db.Text)
+    enabled=db.Column(db.Boolean,nullable=False,default=False)
+    updated_at=db.Column(db.DateTime,default=datetime.utcnow,onupdate=datetime.utcnow,nullable=False)
 
 class AuditLog(db.Model):
     __tablename__="audit_logs"
@@ -299,7 +318,7 @@ def create_app():
     def member_payload(m):
         membership=Membership.query.filter_by(member_id=m.id).order_by(Membership.id.desc()).first()
         account=m.user_account
-        return {"id":m.id,"firstName":m.first_name,"lastName":m.last_name,"company":m.company,"activity":m.activity,"email":m.email,"phone":m.phone,"status":membership.status if membership else None,"startDate":membership.start_date.isoformat() if membership and membership.start_date else None,"endDate":membership.end_date.isoformat() if membership and membership.end_date else None,"accountStatus":account.status if account else "NO_ACCOUNT","isSystemAdmin":bool(account and account.is_system_admin)}
+        return {"id":m.id,"firstName":m.first_name,"lastName":m.last_name,"company":m.company,"activity":m.activity,"email":m.email,"phone":m.phone,"networkType":m.network_type or "OFFICIAL_BNI","status":membership.status if membership else None,"startDate":membership.start_date.isoformat() if membership and membership.start_date else None,"endDate":membership.end_date.isoformat() if membership and membership.end_date else None,"accountStatus":account.status if account else "NO_ACCOUNT","isSystemAdmin":bool(account and account.is_system_admin)}
 
     @app.route("/api/members",methods=["GET","POST"])
     def members():
@@ -317,15 +336,81 @@ def create_app():
                 return {"error":"Un membre avec ce prénom et ce nom existe déjà.","duplicateId":duplicate.id},409
             if email and Member.query.filter(db.func.lower(Member.email)==email.lower()).first():
                 return {"error":"Un membre avec cet e-mail existe déjà."},409
-            member=Member(first_name=first,last_name=last,company=(data.get("company") or "").strip() or None,activity=(data.get("activity") or "").strip() or None,email=email,phone=(data.get("phone") or "").strip() or None)
+            network_type=(data.get("networkType") or "OFFICIAL_BNI").strip().upper()
+            if network_type not in {"OFFICIAL_BNI","OFF","TRANSITION"}:return {"error":"Type de réseau invalide."},400
+            member=Member(first_name=first,last_name=last,company=(data.get("company") or "").strip() or None,activity=(data.get("activity") or "").strip() or None,email=email,phone=(data.get("phone") or "").strip() or None,network_type=network_type)
             db.session.add(member)
             db.session.flush()
             membership=Membership(member_id=member.id,start_date=date.today(),status="ACTIVE")
             db.session.add(membership)
+            db.session.add(MemberNetworkHistory(member_id=member.id,network_type=network_type,start_date=date.today()))
             db.session.commit()
             return {"id":member.id,"firstName":member.first_name,"lastName":member.last_name,"company":member.company,"activity":member.activity,"email":member.email,"phone":member.phone,"status":"ACTIVE"},201
         rows=Member.query.order_by(Member.last_name,Member.first_name).all()
         return jsonify([member_payload(m) for m in rows])
+
+    V2_FEATURES={
+        "REFERRALS":("Recommandations","Encoder et suivre les recommandations entre membres."),
+        "BUSINESS":("Business généré","Encoder les Merci pour le Business et le chiffre d'affaires généré."),
+        "ONE_TO_ONE":("Tête-à-Tête","Encoder les rendez-vous individuels entre membres."),
+        "VISITORS":("Invités","Encoder et suivre les invités amenés au groupe."),
+        "ATTENDANCE":("Présences","Mesurer les présences, suppléants et absences."),
+        "NETWORK_OFF":("Réseau OFF","Activer les membres du réseau interne hors franchise BNI."),
+        "MEMBERSHIP_CHOICE":("Choix BNI / OFF","Permettre de choisir le réseau à l'entrée d'un nouveau membre."),
+        "ACTIVITY_SCORE":("Indice d'engagement","Calculer le score interne d'activité et les couleurs.")
+    }
+
+    @app.get("/api/system/features")
+    def system_features():
+        account,err=require_system_admin()
+        if err:return err
+        rows={x.key:x for x in FeatureFlag.query.all()}
+        return jsonify([{"key":k,"label":label,"description":desc,"enabled":bool(rows.get(k) and rows[k].enabled)} for k,(label,desc) in V2_FEATURES.items()])
+
+    @app.put("/api/system/features/<key>")
+    def system_feature_update(key):
+        account,err=require_system_admin()
+        if err:return err
+        key=key.strip().upper()
+        if key not in V2_FEATURES:return {"error":"Fonctionnalité inconnue."},404
+        data=request.get_json(silent=True) or {}
+        row=db.session.get(FeatureFlag,key)
+        if not row:
+            label,desc=V2_FEATURES[key];row=FeatureFlag(key=key,label=label,description=desc);db.session.add(row)
+        row.enabled=bool(data.get("enabled"))
+        audit(account,"FEATURE_FLAG_UPDATED","feature_flag",key,f"enabled={row.enabled}")
+        db.session.commit()
+        return {"key":key,"enabled":row.enabled}
+
+    @app.post("/api/members/<int:member_id>/network")
+    def system_change_member_network(member_id):
+        account,err=require_system_admin()
+        if err:return err
+        member=db.session.get(Member,member_id)
+        if not member:return {"error":"Membre introuvable."},404
+        data=request.get_json(silent=True) or {}
+        network_type=(data.get("networkType") or "").strip().upper()
+        if network_type not in {"OFFICIAL_BNI","OFF","TRANSITION"}:return {"error":"Type de réseau invalide."},400
+        effective=date.today()
+        if data.get("effectiveDate"):
+            try:effective=date.fromisoformat(data["effectiveDate"])
+            except ValueError:return {"error":"Date de bascule invalide."},400
+        current=MemberNetworkHistory.query.filter_by(member_id=member.id,end_date=None).order_by(MemberNetworkHistory.start_date.desc()).first()
+        if current and current.network_type==network_type:
+            member.network_type=network_type;db.session.commit();return member_payload(member)
+        if current:current.end_date=effective-timedelta(days=1)
+        member.network_type=network_type
+        db.session.add(MemberNetworkHistory(member_id=member.id,network_type=network_type,start_date=effective,changed_by_account_id=account.id))
+        audit(account,"MEMBER_NETWORK_CHANGED","member",member.id,f"{current.network_type if current else 'UNKNOWN'}->{network_type}; effective={effective.isoformat()}")
+        db.session.commit()
+        return member_payload(member)
+
+    @app.get("/api/members/<int:member_id>/network-history")
+    def member_network_history(member_id):
+        _,err=require_admin()
+        if err:return err
+        rows=MemberNetworkHistory.query.filter_by(member_id=member_id).order_by(MemberNetworkHistory.start_date.desc(),MemberNetworkHistory.id.desc()).all()
+        return jsonify([{"id":x.id,"networkType":x.network_type,"startDate":x.start_date.isoformat(),"endDate":x.end_date.isoformat() if x.end_date else None} for x in rows])
 
     @app.post("/api/members/<int:member_id>/password")
     def admin_set_member_password(member_id):
@@ -1684,11 +1769,21 @@ Cette demande est également disponible dans BNI Soignies Hub.""")
         db.create_all()
         # Temporary lightweight migration until Alembic is introduced.
         db.session.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS is_system_admin BOOLEAN NOT NULL DEFAULT FALSE"))
+        db.session.execute(text("ALTER TABLE members ADD COLUMN IF NOT EXISTS network_type VARCHAR(30) NOT NULL DEFAULT 'OFFICIAL_BNI'"))
+        db.session.execute(text("CREATE INDEX IF NOT EXISTS ix_members_network_type ON members(network_type)"))
         db.session.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS password_reset_token VARCHAR(128)"))
         db.session.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS password_reset_expires_at TIMESTAMP"))
         db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_name VARCHAR(255)"))
         db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_type VARCHAR(120)"))
         db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_data BYTEA"))
+        db.session.commit()
+        for key,(label,desc) in V2_FEATURES.items():
+            row=db.session.get(FeatureFlag,key)
+            if not row:db.session.add(FeatureFlag(key=key,label=label,description=desc,enabled=False))
+        db.session.commit()
+        for m in Member.query.all():
+            if not MemberNetworkHistory.query.filter_by(member_id=m.id).first():
+                db.session.add(MemberNetworkHistory(member_id=m.id,network_type=m.network_type or "OFFICIAL_BNI",start_date=(m.created_at.date() if m.created_at else date.today())))
         db.session.commit()
         for code,name in [("SETUP","Préparation"),("RECEPTION","Accueil des invités"),("FOLLOWUP","Suivi des invités")]:
             duty=Duty.query.filter_by(code=code).first()
