@@ -511,9 +511,26 @@ def create_app():
             except ValueError:return {"error":"Date de bascule invalide."},400
         current=MemberNetworkHistory.query.filter_by(member_id=member.id,end_date=None).order_by(MemberNetworkHistory.start_date.desc()).first()
         if current and current.network_type==network_type:
-            member.network_type=network_type;db.session.commit();return member_payload(member)
+            # The member may already have been switched to this network by another workflow
+            # (e.g. activating an OFF membership). In that case, allow the system admin
+            # to correct the effective date instead of silently ignoring it.
+            current.start_date=effective
+            previous=MemberNetworkHistory.query.filter(
+                MemberNetworkHistory.member_id==member.id,
+                MemberNetworkHistory.id!=current.id
+            ).order_by(MemberNetworkHistory.start_date.desc(),MemberNetworkHistory.id.desc()).first()
+            if previous and previous.start_date<effective:
+                previous.end_date=effective-timedelta(days=1)
+            member.network_type=network_type
+            if network_type=="OFF":
+                member.network_access_enabled=True
+            audit(account,"MEMBER_NETWORK_DATE_UPDATED","member",member.id,f"{network_type}; effective={effective.isoformat()}")
+            db.session.commit()
+            return member_payload(member)
         if current:current.end_date=effective-timedelta(days=1)
         member.network_type=network_type
+        if network_type=="OFF":
+            member.network_access_enabled=True
         db.session.add(MemberNetworkHistory(member_id=member.id,network_type=network_type,start_date=effective,changed_by_account_id=account.id))
         audit(account,"MEMBER_NETWORK_CHANGED","member",member.id,f"{current.network_type if current else 'UNKNOWN'}->{network_type}; effective={effective.isoformat()}")
         db.session.commit()
