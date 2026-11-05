@@ -1,6 +1,7 @@
 import os, secrets, io, smtplib
 from email.message import EmailMessage
 from datetime import datetime, date, timedelta
+from zoneinfo import ZoneInfo
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
@@ -424,12 +425,15 @@ def create_app():
         )
 
     def full_network_enabled(account):
-        return bool(feature_enabled("NETWORK_MODULE") and account.member.network_access_enabled)
+        # Core member interactions are available to every current member, including OFF.
+        membership=active_membership_for(account.member_id)
+        return bool(membership and membership.status in {"ACTIVE","ONBOARDING","OFF"})
 
     def require_feature(key):
         account,_=bearer_account()
         if not account:return None,({"error":"Authentification requise."},401)
         if account.is_system_admin:return account,None
+        if key in {"REFERRALS","BUSINESS","ONE_TO_ONE","VISITORS","ACTIVITY_SCORE"} and full_network_enabled(account):return account,None
         if not feature_enabled("NETWORK_MODULE"):return None,({"error":"Le module Réseau n'est pas activé."},403)
         if not feature_enabled(key):return None,({"error":"Cette fonctionnalité Réseau n'est pas activée."},403)
         if full_network_enabled(account):return account,None
@@ -574,31 +578,25 @@ def create_app():
         account,_=bearer_account()
         if not account:return {"error":"Authentification requise."},401
         rows={x.key:x for x in FeatureFlag.query.all()}
-        return {"features":{k:bool(rows.get(k) and rows[k].enabled) for k in V2_FEATURES},"networkType":account.member.network_type or "OFFICIAL_BNI","networkAccessEnabled":bool(account.member.network_access_enabled),"networkModuleEnabled":bool(rows.get("NETWORK_MODULE") and rows["NETWORK_MODULE"].enabled),"networkBridgeEnabled":bool(network_bridge_enabled(account)),"fullNetworkEnabled":bool(account.is_system_admin or full_network_enabled(account)),"isSystemAdmin":bool(account.is_system_admin)}
+        return {"features":{k:bool((full_network_enabled(account) and k in {"NETWORK_MODULE","REFERRALS","BUSINESS","ONE_TO_ONE","VISITORS","ACTIVITY_SCORE"}) or (rows.get(k) and rows[k].enabled)) for k in V2_FEATURES},"networkType":account.member.network_type or "OFFICIAL_BNI","networkAccessEnabled":bool(full_network_enabled(account)),"networkModuleEnabled":bool(full_network_enabled(account) or (rows.get("NETWORK_MODULE") and rows["NETWORK_MODULE"].enabled)),"networkBridgeEnabled":bool(network_bridge_enabled(account)),"fullNetworkEnabled":bool(account.is_system_admin or full_network_enabled(account)),"isSystemAdmin":bool(account.is_system_admin)}
 
     @app.get("/api/network/members")
     def network_members():
-        account,_=bearer_account()
-        if not account:return {"error":"Authentification requise."},401
-        rows=Member.query.join(Membership,Membership.member_id==Member.id).filter(Membership.status.in_(["ACTIVE","ONBOARDING","OFF"])).order_by(Member.last_name,Member.first_name).all()
-        if not account.is_system_admin:
-            if account.member.network_type=="OFF":
-                pass
-            elif full_network_enabled(account):
-                rows=[m for m in rows if m.network_access_enabled or m.network_type=="OFF"]
-            elif network_bridge_enabled(account):
-                rows=[m for m in rows if m.network_type=="OFF" or m.id==account.member_id]
-            else:
-                rows=[]
-        seen=set();out=[]
+        account,err=require_feature("REFERRALS")
+        if err:return err
+        rows=Member.query.order_by(Member.last_name,Member.first_name).all()
+        out=[]
         for m in rows:
-            if m.id in seen:continue
-            seen.add(m.id);out.append({"id":m.id,"name":f"{m.first_name} {m.last_name}","company":m.company,"activity":m.activity,"networkType":m.network_type or "OFFICIAL_BNI"})
+            membership=active_membership_for(m.id)
+            if not membership or membership.status not in {"ACTIVE","ONBOARDING","OFF"}:continue
+            out.append({"id":m.id,"name":f"{m.first_name} {m.last_name}","company":m.company,"activity":m.activity,"networkType":m.network_type or "OFFICIAL_BNI"})
         return jsonify(out)
 
     def bridge_pair_allowed(account,other_member_id):
         other=db.session.get(Member,other_member_id)
         if not other:return False
+        membership=active_membership_for(other_member_id)
+        if not membership or membership.status not in {"ACTIVE","ONBOARDING","OFF"}:return False
         if account.is_system_admin or full_network_enabled(account):return True
         return bool(network_bridge_enabled(account) and (account.member.network_type=="OFF" or other.network_type=="OFF"))
 
@@ -878,6 +876,26 @@ def create_app():
         referrals=Referral.query.filter(Referral.created_at>=datetime.combine(start,datetime.min.time()),Referral.created_at<datetime.combine(end+timedelta(days=1),datetime.min.time())).count()
         won=Referral.query.filter(Referral.status=="WON",Referral.created_at>=datetime.combine(start,datetime.min.time()),Referral.created_at<datetime.combine(end+timedelta(days=1),datetime.min.time())).count()
         return {"mandate":name,"startDate":start.isoformat(),"endDate":end.isoformat(),"businessTotal":total,"referrals":referrals,"wonReferrals":won}
+
+    @app.get("/api/me/home")
+    def member_home():
+        account,err=require_feature("ACTIVITY_SCORE")
+        if err:return err
+        today=datetime.now(ZoneInfo("Europe/Brussels")).date()
+        meetings=Meeting.query.filter(Meeting.date>=today,Meeting.type!="NO_MEETING",Meeting.status!="CANCELLED").order_by(Meeting.date,Meeting.start_time).all()
+        # On the day itself, move on once the meeting start time has passed.
+        now=datetime.now(ZoneInfo("Europe/Brussels"))
+        meeting=next((m for m in meetings if m.date>today or not m.start_time or m.start_time>=now.time().replace(tzinfo=None)),None)
+        next_payload=None
+        if meeting:
+            assignments=DutyAssignment.query.filter(DutyAssignment.meeting_id==meeting.id,DutyAssignment.status.in_(["PUBLISHED","TO_REASSIGN"])).all()
+            guests=NetworkVisitor.query.filter(NetworkVisitor.visit_date==meeting.date,NetworkVisitor.status!="DECLINED").all()
+            legacy=MemberRequest.query.filter_by(type="INVITATION",event_date=meeting.date).all()
+            names={g.name.strip().casefold() for g in guests}
+            next_payload={**meeting_payload(meeting),"assignments":[assignment_payload(a) for a in assignments],
+                "guests":[{"id":f"visitor-{g.id}","name":g.name,"company":g.company,"invitedBy":member_name(g.invited_by_member_id)} for g in guests]+
+                    [{"id":f"request-{g.id}","name":g.guest_name,"company":None,"invitedBy":member_name(g.member_id)} for g in legacy if g.guest_name and g.guest_name.strip().casefold() not in names]}
+        return {"memberStats":network_stats(),"groupStats":network_hub_summary(),"nextMeeting":next_payload}
 
     @app.get("/api/network/leaderboard")
     def network_leaderboard():
@@ -1334,7 +1352,7 @@ Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet e-mai
             role_ids=[a.role_id for a in assignments]
             if role_ids: roles=[r.name for r in Role.query.filter(Role.id.in_(role_ids)).all()]
         admin=bool(account.is_system_admin or any(r.lower().strip() in {"président","president","vice-président","vice president","vice-president","secrétaire trésorier","secretaire tresorier","secrétaire-trésorier","secretaire-tresorier","trésorier","tresorier"} for r in roles))
-        return {"id":account.member.id,"firstName":account.member.first_name,"lastName":account.member.last_name,"email":account.email,"roles":roles,"isAdmin":admin,"isSystemAdmin":bool(account.is_system_admin),"networkType":account.member.network_type or "OFFICIAL_BNI","networkAccessEnabled":bool(account.member.network_access_enabled),"networkModuleEnabled":bool(feature_enabled("NETWORK_MODULE")),"networkBridgeEnabled":bool(network_bridge_enabled(account))}
+        return {"id":account.member.id,"firstName":account.member.first_name,"lastName":account.member.last_name,"email":account.email,"roles":roles,"isAdmin":admin,"isSystemAdmin":bool(account.is_system_admin),"networkType":account.member.network_type or "OFFICIAL_BNI","networkAccessEnabled":bool(full_network_enabled(account)),"networkModuleEnabled":bool(full_network_enabled(account) or feature_enabled("NETWORK_MODULE")),"networkBridgeEnabled":bool(network_bridge_enabled(account))}
 
     def bearer_account():
         header=request.headers.get("Authorization","")
@@ -2228,7 +2246,14 @@ Cette demande est également disponible dans BNI Soignies Hub.""")
         account,_=bearer_account()
         if not account:return {"error":"Authentification requise."},401
         m=account.member
-        return {"id":m.id,"firstName":m.first_name,"lastName":m.last_name,"company":m.company,"activity":m.activity,"email":account.email,"phone":m.phone,"roles":account_payload(account)["roles"]}
+        membership=active_membership_for(m.id)
+        offer=OffMembership.query.filter_by(member_id=m.id,status="ACTIVE").order_by(OffMembership.id.desc()).first()
+        subscription={"label":"Aucun forfait enregistré"}
+        if offer:
+            subscription={"label":OFF_PLANS.get(offer.plan_code,{}).get("label",offer.plan_code),"startsAt":offer.starts_at.isoformat() if offer.starts_at else None,"endsAt":offer.ends_at.isoformat() if offer.ends_at else None}
+        elif membership:
+            subscription={"label":"Membre OFF — aucun forfait OFF actif enregistré" if m.network_type=="OFF" else "Adhésion BNI" if membership.status in {"ACTIVE","ONBOARDING"} else "Ancien membre","startsAt":membership.start_date.isoformat() if membership.start_date else None,"endsAt":membership.end_date.isoformat() if membership.end_date else None}
+        return {"id":m.id,"firstName":m.first_name,"lastName":m.last_name,"company":m.company,"activity":m.activity,"email":account.email,"phone":m.phone,"roles":account_payload(account)["roles"],"subscription":subscription}
 
     @app.route("/api/me/profile",methods=["PATCH"])
     def update_my_profile():
@@ -2256,7 +2281,7 @@ Cette demande est également disponible dans BNI Soignies Hub.""")
             account.password_hash=generate_password_hash(new_password)
         audit(account,"MEMBER_PROFILE_UPDATED","member",m.id,"self-service profile update")
         db.session.commit()
-        return {"status":"ok","profile":{"id":m.id,"firstName":m.first_name,"lastName":m.last_name,"company":m.company,"activity":m.activity,"email":account.email,"phone":m.phone,"roles":account_payload(account)["roles"]}}
+        return {"status":"ok","profile":my_profile()}
 
     def swap_payload(x):
         a=db.session.get(DutyAssignment,x.assignment_id);meeting=db.session.get(Meeting,a.meeting_id) if a else None;duty=db.session.get(Duty,a.duty_id) if a else None;requester=db.session.get(Member,x.requester_id);volunteer=db.session.get(Member,x.volunteer_id) if x.volunteer_id else None
@@ -2459,16 +2484,16 @@ Cette demande est également disponible dans BNI Soignies Hub.""")
     with app.app_context():
         db.create_all()
         # Temporary lightweight migration until Alembic is introduced.
-        db.session.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS is_system_admin BOOLEAN NOT NULL DEFAULT FALSE"))
-        db.session.execute(text("ALTER TABLE members ADD COLUMN IF NOT EXISTS network_type VARCHAR(30) NOT NULL DEFAULT 'OFFICIAL_BNI'"))
-        db.session.execute(text("ALTER TABLE members ADD COLUMN IF NOT EXISTS network_access_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
-        db.session.execute(text("ALTER TABLE referrals ADD COLUMN IF NOT EXISTS closed_at TIMESTAMP"))
+        if db.engine.dialect.name=="postgresql":db.session.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS is_system_admin BOOLEAN NOT NULL DEFAULT FALSE"))
+        if db.engine.dialect.name=="postgresql":db.session.execute(text("ALTER TABLE members ADD COLUMN IF NOT EXISTS network_type VARCHAR(30) NOT NULL DEFAULT 'OFFICIAL_BNI'"))
+        if db.engine.dialect.name=="postgresql":db.session.execute(text("ALTER TABLE members ADD COLUMN IF NOT EXISTS network_access_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
+        if db.engine.dialect.name=="postgresql":db.session.execute(text("ALTER TABLE referrals ADD COLUMN IF NOT EXISTS closed_at TIMESTAMP"))
         db.session.execute(text("CREATE INDEX IF NOT EXISTS ix_members_network_type ON members(network_type)"))
-        db.session.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS password_reset_token VARCHAR(128)"))
-        db.session.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS password_reset_expires_at TIMESTAMP"))
-        db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_name VARCHAR(255)"))
-        db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_type VARCHAR(120)"))
-        db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_data BYTEA"))
+        if db.engine.dialect.name=="postgresql":db.session.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS password_reset_token VARCHAR(128)"))
+        if db.engine.dialect.name=="postgresql":db.session.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS password_reset_expires_at TIMESTAMP"))
+        if db.engine.dialect.name=="postgresql":db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_name VARCHAR(255)"))
+        if db.engine.dialect.name=="postgresql":db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_type VARCHAR(120)"))
+        if db.engine.dialect.name=="postgresql":db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_data BYTEA"))
         db.session.commit()
         enabled_by_default={"REFERRALS","BUSINESS","ONE_TO_ONE","VISITORS","ATTENDANCE","ACTIVITY_SCORE"}
         for key,(label,desc) in V2_FEATURES.items():
