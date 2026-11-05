@@ -405,14 +405,36 @@ def create_app():
         row=db.session.get(FeatureFlag,key)
         return bool(row and row.enabled)
 
+    def active_membership_for(member_id):
+        return Membership.query.filter_by(member_id=member_id).order_by(Membership.id.desc()).first()
+
+    def has_off_members():
+        return db.session.query(Member.id).join(Membership,Membership.member_id==Member.id).filter(
+            Membership.status.in_(["ACTIVE","ONBOARDING","OFF"]),
+            Member.network_type=="OFF"
+        ).first() is not None
+
+    def network_bridge_enabled(account):
+        membership=active_membership_for(account.member_id)
+        return bool(
+            feature_enabled("NETWORK_MODULE")
+            and membership
+            and membership.status in {"ACTIVE","ONBOARDING","OFF"}
+            and has_off_members()
+        )
+
+    def full_network_enabled(account):
+        return bool(feature_enabled("NETWORK_MODULE") and account.member.network_access_enabled)
+
     def require_feature(key):
         account,_=bearer_account()
         if not account:return None,({"error":"Authentification requise."},401)
         if account.is_system_admin:return account,None
         if not feature_enabled("NETWORK_MODULE"):return None,({"error":"Le module Réseau n'est pas activé."},403)
-        if not account.member.network_access_enabled:return None,({"error":"Le module Réseau n'est pas activé pour votre profil."},403)
         if not feature_enabled(key):return None,({"error":"Cette fonctionnalité Réseau n'est pas activée."},403)
-        return account,None
+        if full_network_enabled(account):return account,None
+        if key in {"REFERRALS","BUSINESS","ONE_TO_ONE"} and network_bridge_enabled(account):return account,None
+        return None,({"error":"Le module Réseau complet n'est pas activé pour votre profil."},403)
 
     def member_name(member_id):
         m=db.session.get(Member,member_id)
@@ -552,19 +574,33 @@ def create_app():
         account,_=bearer_account()
         if not account:return {"error":"Authentification requise."},401
         rows={x.key:x for x in FeatureFlag.query.all()}
-        return {"features":{k:bool(rows.get(k) and rows[k].enabled) for k in V2_FEATURES},"networkType":account.member.network_type or "OFFICIAL_BNI","networkAccessEnabled":bool(account.member.network_access_enabled),"networkModuleEnabled":bool(rows.get("NETWORK_MODULE") and rows["NETWORK_MODULE"].enabled),"isSystemAdmin":bool(account.is_system_admin)}
+        return {"features":{k:bool(rows.get(k) and rows[k].enabled) for k in V2_FEATURES},"networkType":account.member.network_type or "OFFICIAL_BNI","networkAccessEnabled":bool(account.member.network_access_enabled),"networkModuleEnabled":bool(rows.get("NETWORK_MODULE") and rows["NETWORK_MODULE"].enabled),"networkBridgeEnabled":bool(network_bridge_enabled(account)),"fullNetworkEnabled":bool(account.is_system_admin or full_network_enabled(account)),"isSystemAdmin":bool(account.is_system_admin)}
 
     @app.get("/api/network/members")
     def network_members():
         account,_=bearer_account()
         if not account:return {"error":"Authentification requise."},401
         rows=Member.query.join(Membership,Membership.member_id==Member.id).filter(Membership.status.in_(["ACTIVE","ONBOARDING","OFF"])).order_by(Member.last_name,Member.first_name).all()
-        if not account.is_system_admin:rows=[m for m in rows if m.network_access_enabled]
+        if not account.is_system_admin:
+            if account.member.network_type=="OFF":
+                pass
+            elif full_network_enabled(account):
+                rows=[m for m in rows if m.network_access_enabled or m.network_type=="OFF"]
+            elif network_bridge_enabled(account):
+                rows=[m for m in rows if m.network_type=="OFF" or m.id==account.member_id]
+            else:
+                rows=[]
         seen=set();out=[]
         for m in rows:
             if m.id in seen:continue
             seen.add(m.id);out.append({"id":m.id,"name":f"{m.first_name} {m.last_name}","company":m.company,"activity":m.activity,"networkType":m.network_type or "OFFICIAL_BNI"})
         return jsonify(out)
+
+    def bridge_pair_allowed(account,other_member_id):
+        other=db.session.get(Member,other_member_id)
+        if not other:return False
+        if account.is_system_admin or full_network_enabled(account):return True
+        return bool(network_bridge_enabled(account) and (account.member.network_type=="OFF" or other.network_type=="OFF"))
 
     def referral_payload(x):
         return {"id":x.id,"fromMemberId":x.from_member_id,"fromMember":member_name(x.from_member_id),"toMemberId":x.to_member_id,"toMember":member_name(x.to_member_id),"contactName":x.contact_name,"company":x.company,"contactEmail":x.contact_email,"contactPhone":x.contact_phone,"notes":x.notes,"status":x.status,"estimatedValue":float(x.estimated_value) if x.estimated_value is not None else None,"closedAt":x.closed_at.isoformat() if x.closed_at else None,"businessAmount":float((BusinessThanks.query.filter_by(referral_id=x.id).first().amount)) if BusinessThanks.query.filter_by(referral_id=x.id).first() else None,"createdAt":x.created_at.isoformat(),"updatedAt":x.updated_at.isoformat() if x.updated_at else None}
@@ -579,6 +615,7 @@ def create_app():
             except (TypeError,ValueError):return {"error":"Membre destinataire requis."},400
             if to_id==account.member_id:return {"error":"Vous ne pouvez pas vous envoyer une recommandation à vous-même."},400
             if not db.session.get(Member,to_id):return {"error":"Membre destinataire introuvable."},404
+            if not bridge_pair_allowed(account,to_id):return {"error":"Votre accès Réseau permet uniquement les interactions avec les Membres OFF."},403
             contact=(data.get("contactName") or "").strip()
             if not contact:return {"error":"Le nom du contact recommandé est obligatoire."},400
             estimated=None
@@ -597,7 +634,10 @@ def create_app():
         scope=request.args.get("scope","mine")
         if scope!="all" or not account_payload(account)["isAdmin"]:
             q=q.filter(db.or_(Referral.from_member_id==account.member_id,Referral.to_member_id==account.member_id))
-        return jsonify([referral_payload(x) for x in q.order_by(Referral.created_at.desc()).limit(500).all()])
+        rows=q.order_by(Referral.created_at.desc()).limit(500).all()
+        if not account.is_system_admin and not full_network_enabled(account):
+            rows=[x for x in rows if (db.session.get(Member,x.from_member_id).network_type=="OFF" or db.session.get(Member,x.to_member_id).network_type=="OFF")]
+        return jsonify([referral_payload(x) for x in rows])
 
     @app.patch("/api/network/referrals/<int:referral_id>")
     def network_referral_update(referral_id):
@@ -606,6 +646,8 @@ def create_app():
         x=db.session.get(Referral,referral_id)
         if not x:return {"error":"Recommandation introuvable."},404
         if account.member_id!=x.to_member_id and not account_payload(account)["isAdmin"]:return {"error":"Le suivi doit être effectué par le membre qui a reçu la recommandation."},403
+        other_id=x.from_member_id if account.member_id==x.to_member_id else x.to_member_id
+        if not bridge_pair_allowed(account,other_id):return {"error":"Votre accès Réseau permet uniquement les interactions avec les Membres OFF."},403
         data=request.get_json(silent=True) or {}
         status=(data.get("status") or "").strip().upper()
         if status not in REFERRAL_STATUSES:return {"error":"Statut invalide."},400
@@ -636,6 +678,8 @@ def create_app():
         x=db.session.get(Referral,referral_id)
         if not x:return {"error":"Recommandation introuvable."},404
         if account.member_id not in {x.from_member_id,x.to_member_id} and not account_payload(account)["isAdmin"]:return {"error":"Accès refusé."},403
+        other_id=x.from_member_id if account.member_id==x.to_member_id else x.to_member_id
+        if account.member_id in {x.from_member_id,x.to_member_id} and not bridge_pair_allowed(account,other_id):return {"error":"Votre accès Réseau permet uniquement les interactions avec les Membres OFF."},403
         rows=ReferralStatusHistory.query.filter_by(referral_id=x.id).order_by(ReferralStatusHistory.created_at.desc()).all()
         return jsonify([{"id":h.id,"status":h.status,"note":h.note,"changedBy":member_name(h.changed_by_member_id),"createdAt":h.created_at.isoformat()} for h in rows])
 
@@ -653,6 +697,7 @@ def create_app():
             if credited==account.member_id:return {"error":"Le Merci pour le Business doit créditer un autre membre."},400
             if amount<=0:return {"error":"Le montant doit être supérieur à 0."},400
             if not db.session.get(Member,credited):return {"error":"Membre introuvable."},404
+            if not bridge_pair_allowed(account,credited):return {"error":"Votre accès Réseau permet uniquement les interactions avec les Membres OFF."},403
             business_date=date.today()
             if data.get("businessDate"):
                 try:business_date=date.fromisoformat(data["businessDate"])
@@ -682,6 +727,7 @@ def create_app():
             except (TypeError,ValueError):return {"error":"Membre partenaire requis."},400
             if partner==account.member_id:return {"error":"Choisissez un autre membre."},400
             if not db.session.get(Member,partner):return {"error":"Membre introuvable."},404
+            if not bridge_pair_allowed(account,partner):return {"error":"Votre accès Réseau permet uniquement les interactions avec les Membres OFF."},403
             d=date.today()
             if data.get("meetingDate"):
                 try:d=date.fromisoformat(data["meetingDate"])
@@ -1288,7 +1334,7 @@ Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet e-mai
             role_ids=[a.role_id for a in assignments]
             if role_ids: roles=[r.name for r in Role.query.filter(Role.id.in_(role_ids)).all()]
         admin=bool(account.is_system_admin or any(r.lower().strip() in {"président","president","vice-président","vice president","vice-president","secrétaire trésorier","secretaire tresorier","secrétaire-trésorier","secretaire-tresorier","trésorier","tresorier"} for r in roles))
-        return {"id":account.member.id,"firstName":account.member.first_name,"lastName":account.member.last_name,"email":account.email,"roles":roles,"isAdmin":admin,"isSystemAdmin":bool(account.is_system_admin),"networkType":account.member.network_type or "OFFICIAL_BNI","networkAccessEnabled":bool(account.member.network_access_enabled),"networkModuleEnabled":bool(feature_enabled("NETWORK_MODULE"))}
+        return {"id":account.member.id,"firstName":account.member.first_name,"lastName":account.member.last_name,"email":account.email,"roles":roles,"isAdmin":admin,"isSystemAdmin":bool(account.is_system_admin),"networkType":account.member.network_type or "OFFICIAL_BNI","networkAccessEnabled":bool(account.member.network_access_enabled),"networkModuleEnabled":bool(feature_enabled("NETWORK_MODULE")),"networkBridgeEnabled":bool(network_bridge_enabled(account))}
 
     def bearer_account():
         header=request.headers.get("Authorization","")
