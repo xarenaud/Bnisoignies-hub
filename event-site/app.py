@@ -6,6 +6,10 @@ import json
 import os
 import secrets
 import sqlite3
+import smtplib
+import ssl
+import threading
+from email.message import EmailMessage
 import time
 from datetime import datetime
 from functools import wraps
@@ -22,6 +26,9 @@ DATA.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA / 'registrations.sqlite3'
 ADMIN_PASSWORD = os.environ.get('BNI_EVENT_ADMIN_PASSWORD', '')
 RATE_SECRET = os.environ.get('BNI_EVENT_RATE_SECRET', ADMIN_PASSWORD)
+NOTIFICATIONS_ENABLED = os.environ.get('BNI_EVENT_NOTIFICATIONS_ENABLED', 'false').lower() == 'true'
+NOTIFY_TO = os.environ.get('BNI_EVENT_NOTIFY_TO', 'event@bim-soignies.be')
+mail_wake = threading.Event()
 
 
 def database():
@@ -38,11 +45,102 @@ with database() as db:
       count INTEGER NOT NULL, total INTEGER NOT NULL,
       created_at TEXT NOT NULL, is_test INTEGER NOT NULL DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS email_outbox (
+      reference TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0, next_attempt REAL NOT NULL DEFAULT 0,
+      claimed_at REAL, sent_at TEXT, last_error TEXT
+    );
+    INSERT OR IGNORE INTO email_outbox(reference) SELECT reference FROM registrations WHERE is_test=0;
     CREATE TABLE IF NOT EXISTS rate_limits (
       address_hash TEXT NOT NULL, window INTEGER NOT NULL, count INTEGER NOT NULL,
       PRIMARY KEY(address_hash, window)
     );
     ''')
+
+
+def notification_message(row):
+    payload = json.loads(row['payload'])
+    message = EmailMessage()
+    marker = '[TEST] ' if row['is_test'] else ''
+    message['Subject'] = f"{marker}Inter BNI — {payload['firstName']} {payload['lastName']} — {row['count']} place(s) — {row['reference']}"
+    message['From'] = os.environ.get('SMTP_FROM', '').strip()
+    message['To'] = NOTIFY_TO
+    message['Message-ID'] = f"<{row['reference']}@event.bim-soignies.be>"
+    guests = '\n'.join(f"  {i}. {g['firstName']} {g['lastName']}" for i, g in enumerate(payload['guests'], 1)) or '  Aucun'
+    message.set_content(
+        f"{'INSCRIPTION DE TEST — NE PAS COMPTER' if row['is_test'] else 'NOUVELLE INSCRIPTION'}\n\n"
+        f"Inter BNI Soignies — 26 novembre 2026, de 7 h à 10 h 30\n"
+        f"Garage Ford Steveny Soignies\n\n"
+        f"Référence : {row['reference']}\nDate : {row['created_at']}\n"
+        f"Personne qui paie : {payload['firstName']} {payload['lastName']}\n"
+        f"Groupe : {payload['group']}\nNombre total de places : {row['count']}\n"
+        f"Montant à payer : {row['total']} EUR\n\nAccompagnants :\n{guests}\n\n"
+        f"Paiement : à vérifier par virement. Cet email ne confirme pas la réception du paiement.\n"
+        f"Bénéficiaire : BNI SOIGNIES\nCompte : BE16 1431 1380 7474\n"
+        f"Communication : {payload['lastName']} {payload['firstName']} {payload['group']}\n\n"
+        f"Site : https://event.bim-soignies.be/\n"
+    )
+    return message
+
+
+def send_notification(row):
+    host = os.environ.get('SMTP_HOST', '').strip()
+    sender = os.environ.get('SMTP_FROM', '').strip()
+    if not host or not sender:
+        raise RuntimeError('SMTP configuration missing')
+    use_ssl = os.environ.get('SMTP_SSL', 'false').lower() in {'true', '1', 'yes'}
+    use_tls = os.environ.get('SMTP_STARTTLS', 'true').lower() in {'true', '1', 'yes'}
+    port = int(os.environ.get('SMTP_PORT', '465' if use_ssl else '587'))
+    context = ssl.create_default_context()
+    client = smtplib.SMTP_SSL(host, port, timeout=20, context=context) if use_ssl else smtplib.SMTP(host, port, timeout=20)
+    with client:
+        if not use_ssl and use_tls:
+            client.starttls(context=context)
+        username = os.environ.get('SMTP_USER', '').strip()
+        if username:
+            client.login(username, os.environ.get('SMTP_PASSWORD', ''))
+        refused = client.send_message(notification_message(row))
+        if refused:
+            raise smtplib.SMTPRecipientsRefused(refused)
+
+
+def deliver_pending():
+    now = time.time()
+    with database() as db:
+        db.execute('BEGIN IMMEDIATE')
+        db.execute("UPDATE email_outbox SET status='pending' WHERE status='sending' AND claimed_at < ?", (now - 300,))
+        row = db.execute("SELECT r.*, o.attempts FROM email_outbox o JOIN registrations r USING(reference) WHERE o.status='pending' AND o.next_attempt <= ? ORDER BY r.id LIMIT 1", (now,)).fetchone()
+        if not row:
+            return False
+        db.execute("UPDATE email_outbox SET status='sending', claimed_at=?, attempts=attempts+1 WHERE reference=?", (now, row['reference']))
+    try:
+        send_notification(row)
+    except Exception as error:
+        # Keep private SMTP replies and addresses out of logs and status responses.
+        error_kind = type(error).__name__
+        with database() as db:
+            db.execute("UPDATE email_outbox SET status='pending', next_attempt=?, last_error=? WHERE reference=?", (time.time() + min(3600, 30 * 2 ** min(row['attempts'], 7)), error_kind, row['reference']))
+        app.logger.warning('Event notification pending %s (%s)', row['reference'], error_kind)
+    else:
+        with database() as db:
+            db.execute("UPDATE email_outbox SET status='sent', sent_at=?, last_error=NULL WHERE reference=?", (datetime.now(ZoneInfo('Europe/Brussels')).isoformat(), row['reference']))
+        app.logger.info('Event notification accepted by SMTP: %s', row['reference'])
+    return True
+
+
+def notification_worker():
+    while True:
+        try:
+            if deliver_pending():
+                continue
+        except Exception:
+            app.logger.error('Event notification worker temporarily unavailable')
+        mail_wake.wait(15)
+        mail_wake.clear()
+
+
+if NOTIFICATIONS_ENABLED:
+    threading.Thread(target=notification_worker, daemon=True, name='event-mail').start()
 
 
 @app.after_request
@@ -162,6 +260,9 @@ def register():
         created_at = datetime.now(ZoneInfo('Europe/Brussels')).isoformat()
         db.execute('INSERT INTO registrations(reference,fingerprint,payload,count,total,created_at,is_test) VALUES(?,?,?,?,?,?,?)',
                    (reference, fingerprint, encoded, count, count * 15, created_at, int(is_test)))
+        if not is_test or (data.get('notifyTest') is True and is_admin()):
+            db.execute('INSERT INTO email_outbox(reference) VALUES(?)', (reference,))
+    mail_wake.set()
     return jsonify(reference=reference, count=count, total=count * 15), 201
 
 
@@ -189,5 +290,15 @@ def clean_tests():
     if not same_origin():
         return jsonify(error='Origine non autorisée.'), 403
     with database() as db:
+        db.execute('DELETE FROM email_outbox WHERE reference IN (SELECT reference FROM registrations WHERE is_test=1)')
         result = db.execute('DELETE FROM registrations WHERE is_test=1')
     return jsonify(removed=result.rowcount)
+
+
+@app.get('/api/admin/notifications/status')
+@admin_required
+def notification_status():
+    with database() as db:
+        counts = {r['status']: r['n'] for r in db.execute('SELECT status, COUNT(*) n FROM email_outbox GROUP BY status')}
+        latest = [dict(r) for r in db.execute('SELECT reference,status,attempts,sent_at,last_error FROM email_outbox ORDER BY rowid DESC LIMIT 10')]
+    return jsonify(enabled=NOTIFICATIONS_ENABLED, recipient=NOTIFY_TO, counts=counts, latest=latest)

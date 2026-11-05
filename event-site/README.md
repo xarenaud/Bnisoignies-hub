@@ -19,3 +19,12 @@ Tests : `python -m unittest -v test_app.py` (base temporaire indépendante).
 - George Morina : https://www.pexels.com/photo/men-in-black-and-blue-suit-having-conversation-while-holding-drinking-glasses-6918426/ — licence https://www.pexels.com/license/
 
 Images d’illustration, sans lien avec les participants de l’événement. Crédits présents sur la page. Images servies localement.
+
+
+## Notifications d’inscription
+
+Chaque inscription réelle ajoute une notification dans une file SQLite persistante, dans la même transaction que la réservation. Le worker du processus Gunicorn unique transmet vers `event@bim-soignies.be` (variable `BNI_EVENT_NOTIFY_TO`) et réessaie en cas d’échec SMTP. Les doublons de soumission ne créent pas une deuxième notification. Les inscriptions réelles déjà présentes sont ajoutées à la file lors du premier démarrage de cette version.
+
+Variables SMTP héritées par références Railway depuis le service BNI Hub API : SMTP_HOST, SMTP_PORT, SMTP_SSL, SMTP_STARTTLS, SMTP_USER, SMTP_PASSWORD, SMTP_FROM. Aucune valeur sensible dans le dépôt. `BNI_EVENT_NOTIFICATIONS_ENABLED=true` active le worker. Ne pas augmenter le nombre de workers ni activer le preload sans adapter le mécanisme de worker.
+
+Les essais sont exclus des emails sauf si une requête administrateur comporte explicitement `isTest:true, notifyTest:true` ; le sujet porte alors le préfixe `[TEST]`. Suivi technique réservé à l’administrateur : GET `/api/admin/notifications/status`. Le statut `sent` signifie que le serveur SMTP a accepté l’email, pas qu’une lecture dans la boîte finale a été vérifiée.
