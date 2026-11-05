@@ -15,10 +15,11 @@ class RegistrationTests(unittest.TestCase):
     def setUp(self):
         self.client = app.app.test_client()
         with app.database() as db:
-            db.execute('DELETE FROM email_outbox')
+            db.execute('DELETE FROM email_deliveries WHERE kind="organizer"')
+            db.execute('DELETE FROM email_deliveries')
             db.execute('DELETE FROM registrations')
             db.execute('DELETE FROM rate_limits')
-        self.payload = {'firstName': 'Anne', 'lastName': 'Test', 'group': 'Un autre groupe', 'count': 3,
+        self.payload = {'firstName': 'Anne', 'lastName': 'Test', 'group': 'Un autre groupe', 'count': 3, 'email': 'participant@example.org', 'phone': '+32 470 12 34 56', 'invoiceRequested': False, 'vatNumber': '', 'paymentAccepted': True,
                         'guests': [{'firstName': 'Marc', 'lastName': 'A'}, {'firstName': 'Julie', 'lastName': 'B'}]}
         self.auth = {'Authorization': 'Basic ' + base64.b64encode(b'bni:test-only-password').decode()}
 
@@ -57,35 +58,53 @@ class RegistrationTests(unittest.TestCase):
         r = self.client.post('/register.php', json=self.payload)
         self.client.post('/register.php', json=self.payload)
         with app.database() as db:
-            self.assertEqual(db.execute('SELECT COUNT(*) FROM email_outbox').fetchone()[0], 1)
-            row = db.execute('SELECT * FROM registrations').fetchone()
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM email_deliveries').fetchone()[0], 2)
+            row = db.execute("SELECT *, 'organizer' AS kind FROM registrations").fetchone()
         with patch.dict(os.environ, {'SMTP_FROM': 'hub@bim-soignies.be'}):
             msg = app.notification_message(row)
         self.assertEqual(msg['To'], 'event@bim-soignies.be')
-        for expected in ['45 EUR', 'Anne Test', 'Marc A', 'Julie B', 'Un autre groupe', 'à vérifier par virement']:
+        for expected in ['45 EUR', 'Anne Test', 'Marc A', 'Julie B', 'Un autre groupe', 'même en cas d’absence']:
             self.assertIn(expected, msg.get_content())
         with patch.object(app, 'send_notification', side_effect=TimeoutError):
             self.assertTrue(app.deliver_pending())
         with app.database() as db:
-            queued = db.execute('SELECT * FROM email_outbox').fetchone()
+            queued = db.execute('SELECT * FROM email_deliveries WHERE kind="organizer"').fetchone()
             self.assertEqual(queued['status'], 'pending')
             self.assertEqual(queued['last_error'], 'TimeoutError')
-            db.execute('UPDATE email_outbox SET next_attempt=0')
+            db.execute("UPDATE email_deliveries SET next_attempt=0 WHERE kind='organizer'")
         with patch.object(app, 'send_notification') as sender:
             self.assertTrue(app.deliver_pending())
+            self.assertTrue(app.deliver_pending())
             self.assertFalse(app.deliver_pending())
-            sender.assert_called_once()
+            self.assertEqual(sender.call_count, 2)
         with app.database() as db:
-            self.assertEqual(db.execute('SELECT status FROM email_outbox').fetchone()[0], 'sent')
+            self.assertEqual(db.execute('SELECT status FROM email_deliveries WHERE kind="organizer"').fetchone()[0], 'sent')
 
     def test_test_notifications_require_explicit_admin(self):
         self.client.post('/register.php', json={**self.payload, 'isTest': True}, headers=self.auth)
         with app.database() as db:
-            self.assertEqual(db.execute('SELECT COUNT(*) FROM email_outbox').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM email_deliveries').fetchone()[0], 0)
         self.client.post('/api/admin/test-registrations/cleanup', headers=self.auth)
         self.client.post('/register.php', json={**self.payload, 'isTest': True, 'notifyTest': True}, headers=self.auth)
         with app.database() as db:
-            self.assertEqual(db.execute('SELECT COUNT(*) FROM email_outbox').fetchone()[0], 1)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM email_deliveries').fetchone()[0], 2)
+
+
+    def test_required_contact_billing_and_payment(self):
+        for change in [{'email': ''}, {'email': 'incorrect'}, {'phone': ''}, {'paymentAccepted': False}, {'paymentAccepted': 'true'}, {'invoiceRequested': True, 'vatNumber': ''}]:
+            self.assertEqual(self.client.post('/register.php', json={**self.payload, **change}).status_code, 422)
+        r = self.client.post('/register.php', json={**self.payload, 'invoiceRequested': True, 'vatNumber': 'BE0123456789'})
+        self.assertEqual(r.status_code, 201)
+        with app.database() as db:
+            row = db.execute("SELECT *, 'participant' AS kind FROM registrations").fetchone()
+            data = __import__('json').loads(row['payload'])
+        self.assertEqual(data['vatNumber'], 'BE0123456789')
+        self.assertTrue(data['paymentAcceptedAt'])
+        msg = app.notification_message(row)
+        self.assertEqual(msg['To'], self.payload['email'])
+        self.assertIn('Confirmation de votre inscription', msg['Subject'])
+        self.assertIn('BE0123456789', msg.get_content())
+        self.assertIn('même en cas d’absence', msg.get_content())
 
 
     def test_static_assets_and_rate_limit(self):

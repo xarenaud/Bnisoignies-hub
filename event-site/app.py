@@ -4,6 +4,7 @@ import hmac
 import io
 import json
 import os
+import re
 import secrets
 import sqlite3
 import smtplib
@@ -50,7 +51,16 @@ with database() as db:
       attempts INTEGER NOT NULL DEFAULT 0, next_attempt REAL NOT NULL DEFAULT 0,
       claimed_at REAL, sent_at TEXT, last_error TEXT
     );
-    INSERT OR IGNORE INTO email_outbox(reference) SELECT reference FROM registrations WHERE is_test=0;
+    CREATE TABLE IF NOT EXISTS email_deliveries (
+      reference TEXT NOT NULL, kind TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
+      next_attempt REAL NOT NULL DEFAULT 0, claimed_at REAL, sent_at TEXT, last_error TEXT,
+      PRIMARY KEY(reference,kind)
+    );
+    INSERT OR IGNORE INTO email_deliveries(reference,kind,status,attempts,next_attempt,claimed_at,sent_at,last_error)
+      SELECT reference,'organizer',status,attempts,next_attempt,claimed_at,sent_at,last_error FROM email_outbox;
+    INSERT OR IGNORE INTO email_deliveries(reference,kind)
+      SELECT reference,'organizer' FROM registrations WHERE is_test=0;
     CREATE TABLE IF NOT EXISTS rate_limits (
       address_hash TEXT NOT NULL, window INTEGER NOT NULL, count INTEGER NOT NULL,
       PRIMARY KEY(address_hash, window)
@@ -60,26 +70,37 @@ with database() as db:
 
 def notification_message(row):
     payload = json.loads(row['payload'])
+    participant = row['kind'] == 'participant'
     message = EmailMessage()
     marker = '[TEST] ' if row['is_test'] else ''
-    message['Subject'] = f"{marker}Inter BNI — {payload['firstName']} {payload['lastName']} — {row['count']} place(s) — {row['reference']}"
+    title = 'Confirmation de votre inscription' if participant else f"Nouvelle inscription — {payload['firstName']} {payload['lastName']}"
+    message['Subject'] = f"{marker}Inter BNI — {title} — {row['count']} place(s) — {row['reference']}"
     message['From'] = os.environ.get('SMTP_FROM', '').strip()
-    message['To'] = NOTIFY_TO
-    message['Message-ID'] = f"<{row['reference']}@event.bim-soignies.be>"
+    message['To'] = payload['email'] if participant else NOTIFY_TO
+    message['Reply-To'] = NOTIFY_TO
+    message['Message-ID'] = f"<{row['reference']}.{row['kind']}@event.bim-soignies.be>"
     guests = '\n'.join(f"  {i}. {g['firstName']} {g['lastName']}" for i, g in enumerate(payload['guests'], 1)) or '  Aucun'
-    message.set_content(
-        f"{'INSCRIPTION DE TEST — NE PAS COMPTER' if row['is_test'] else 'NOUVELLE INSCRIPTION'}\n\n"
-        f"Inter BNI Soignies — 26 novembre 2026, de 7 h à 10 h 30\n"
-        f"Garage Ford Steveny Soignies\n\n"
+    greeting = f"Bonjour {payload['firstName']},\nVotre inscription est enregistrée.\n" if participant else 'NOUVELLE INSCRIPTION\n'
+    invoice = ('Facture / note de frais demandée — TVA : ' + payload.get('vatNumber', '')) if payload.get('invoiceRequested') else 'Facture / note de frais : non demandée'
+    body = (
+        ('ESSAI TECHNIQUE — NE PAS COMPTER\n\n' if row['is_test'] else '') + greeting + '\n'
+        f"Inter BNI Soignies — jeudi 26 novembre 2026, de 7 h à 10 h 30\n"
+        f"Garage Ford Steveny Soignies, chaussée de Mons 71, 7060 Soignies\n\n"
         f"Référence : {row['reference']}\nDate : {row['created_at']}\n"
         f"Personne qui paie : {payload['firstName']} {payload['lastName']}\n"
-        f"Groupe : {payload['group']}\nNombre total de places : {row['count']}\n"
-        f"Montant à payer : {row['total']} EUR\n\nAccompagnants :\n{guests}\n\n"
-        f"Paiement : à vérifier par virement. Cet email ne confirme pas la réception du paiement.\n"
+        f"Groupe : {payload['group']}\nEmail : {payload.get('email', 'Non renseigné')}\n"
+        f"Téléphone : {payload.get('phone', 'Non renseigné')}\n{invoice}\n"
+        f"Nombre total de places : {row['count']}\nMontant à payer : {row['total']} EUR\n\n"
+        f"Accompagnants :\n{guests}\n\n"
+        f"Paiement obligatoire par virement. Le montant reste dû même en cas d’absence.\n"
         f"Bénéficiaire : BNI SOIGNIES\nCompte : BE16 1431 1380 7474\n"
         f"Communication : {payload['lastName']} {payload['firstName']} {payload['group']}\n\n"
-        f"Site : https://event.bim-soignies.be/\n"
+        f"Cette confirmation d’inscription ne confirme pas la réception du paiement.\n"
     )
+    if payload.get('paymentAcceptedAt'):
+        body += f"Engagement de paiement accepté le {payload['paymentAcceptedAt']} — {payload.get('paymentTerms', '')}\n"
+    body += '\nSite : https://event.bim-soignies.be/\nContact : ' + NOTIFY_TO + '\n'
+    message.set_content(body)
     return message
 
 
@@ -108,22 +129,22 @@ def deliver_pending():
     now = time.time()
     with database() as db:
         db.execute('BEGIN IMMEDIATE')
-        db.execute("UPDATE email_outbox SET status='pending' WHERE status='sending' AND claimed_at < ?", (now - 300,))
-        row = db.execute("SELECT r.*, o.attempts FROM email_outbox o JOIN registrations r USING(reference) WHERE o.status='pending' AND o.next_attempt <= ? ORDER BY r.id LIMIT 1", (now,)).fetchone()
+        db.execute("UPDATE email_deliveries SET status='pending' WHERE status='sending' AND claimed_at < ?", (now - 300,))
+        row = db.execute("SELECT r.*, o.attempts, o.kind FROM email_deliveries o JOIN registrations r USING(reference) WHERE o.status='pending' AND o.next_attempt <= ? ORDER BY r.id LIMIT 1", (now,)).fetchone()
         if not row:
             return False
-        db.execute("UPDATE email_outbox SET status='sending', claimed_at=?, attempts=attempts+1 WHERE reference=?", (now, row['reference']))
+        db.execute("UPDATE email_deliveries SET status='sending', claimed_at=?, attempts=attempts+1 WHERE reference=? AND kind=?", (now, row['reference'], row['kind']))
     try:
         send_notification(row)
     except Exception as error:
         # Keep private SMTP replies and addresses out of logs and status responses.
         error_kind = type(error).__name__
         with database() as db:
-            db.execute("UPDATE email_outbox SET status='pending', next_attempt=?, last_error=? WHERE reference=?", (time.time() + min(3600, 30 * 2 ** min(row['attempts'], 7)), error_kind, row['reference']))
+            db.execute("UPDATE email_deliveries SET status='pending', next_attempt=?, last_error=? WHERE reference=? AND kind=?", (time.time() + min(3600, 30 * 2 ** min(row['attempts'], 7)), error_kind, row['reference'], row['kind']))
         app.logger.warning('Event notification pending %s (%s)', row['reference'], error_kind)
     else:
         with database() as db:
-            db.execute("UPDATE email_outbox SET status='sent', sent_at=?, last_error=NULL WHERE reference=?", (datetime.now(ZoneInfo('Europe/Brussels')).isoformat(), row['reference']))
+            db.execute("UPDATE email_deliveries SET status='sent', sent_at=?, last_error=NULL WHERE reference=? AND kind=?", (datetime.now(ZoneInfo('Europe/Brussels')).isoformat(), row['reference'], row['kind']))
         app.logger.info('Event notification accepted by SMTP: %s', row['reference'])
     return True
 
@@ -234,8 +255,19 @@ def register():
         not isinstance(guests, list) or len(guests) != count - 1 or
         not all(isinstance(g, dict) and valid_name(g.get('firstName')) and valid_name(g.get('lastName')) for g in guests)):
         return jsonify(error='Vérifiez le groupe et les noms de tous les participants.'), 422
+    email = data.get('email')
+    phone = data.get('phone')
+    invoice = data.get('invoiceRequested', False)
+    vat = data.get('vatNumber', '')
+    if (not isinstance(email, str) or len(email) > 254 or not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', email.strip()) or
+        not isinstance(phone, str) or not re.fullmatch(r'[+0-9() .-]{6,35}', phone.strip()) or
+        sum(c.isdigit() for c in phone) < 6 or type(invoice) is not bool or data.get('paymentAccepted') is not True):
+        return jsonify(error='Renseignez un email, un téléphone valides et acceptez l’obligation de paiement.'), 422
+    if invoice and (not isinstance(vat, str) or not re.fullmatch(r'[A-Za-z0-9 .-]{4,32}', vat.strip())):
+        return jsonify(error='Renseignez le numéro de TVA pour la facture / note de frais.'), 422
     payload = {k: data[k].strip() for k in ('firstName', 'lastName', 'group')}
     payload.update(count=count, guests=[{k: g[k].strip() for k in ('firstName', 'lastName')} for g in guests])
+    payload.update(email=email.strip().lower(), phone=phone.strip(), invoiceRequested=invoice, vatNumber=vat.strip().upper() if invoice else '', paymentAccepted=True, paymentTermsVersion='2026-11-05-v1', paymentTerms='Inscription avec obligation de paiement. Le montant total reste dû même en cas d’absence.')
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     fingerprint = hashlib.sha256(encoded.encode()).hexdigest()
     is_test = bool(data.get('isTest') is True and is_admin())
@@ -258,10 +290,12 @@ def register():
         db.execute('INSERT INTO rate_limits VALUES (?,?,1) ON CONFLICT(address_hash,window) DO UPDATE SET count=count+1', (address_hash, window))
         reference = 'BNI-' + secrets.token_hex(5).upper()
         created_at = datetime.now(ZoneInfo('Europe/Brussels')).isoformat()
+        payload['paymentAcceptedAt'] = created_at
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         db.execute('INSERT INTO registrations(reference,fingerprint,payload,count,total,created_at,is_test) VALUES(?,?,?,?,?,?,?)',
                    (reference, fingerprint, encoded, count, count * 15, created_at, int(is_test)))
         if not is_test or (data.get('notifyTest') is True and is_admin()):
-            db.execute('INSERT INTO email_outbox(reference) VALUES(?)', (reference,))
+            db.executemany('INSERT INTO email_deliveries(reference,kind) VALUES(?,?)', [(reference, 'organizer'), (reference, 'participant')])
     mail_wake.set()
     return jsonify(reference=reference, count=count, total=count * 15), 201
 
@@ -271,7 +305,7 @@ def register():
 def export():
     output = io.StringIO()
     writer = csv.writer(output, delimiter=';')
-    writer.writerow(['Référence', 'Date', 'Prénom payeur', 'Nom payeur', 'Groupe', 'Places', 'Total EUR', 'Accompagnants', 'Paiement'])
+    writer.writerow(['Référence', 'Date', 'Prénom payeur', 'Nom payeur', 'Groupe', 'Email', 'Téléphone', 'Facture / note de frais', 'TVA', 'Places', 'Total EUR', 'Accompagnants', 'Engagement accepté le', 'Conditions acceptées', 'Paiement'])
     # Avoid spreadsheet formula execution from user-controlled CSV fields.
     def cell(value):
         text = str(value)
@@ -280,7 +314,7 @@ def export():
         rows = db.execute('SELECT * FROM registrations WHERE is_test=0 ORDER BY id').fetchall()
     for row in rows:
         p = json.loads(row['payload'])
-        writer.writerow([cell(x) for x in [row['reference'], row['created_at'], p['firstName'], p['lastName'], p['group'], row['count'], row['total'], ', '.join(g['firstName']+' '+g['lastName'] for g in p['guests']), 'À vérifier par virement']])
+        writer.writerow([cell(x) for x in [row['reference'], row['created_at'], p['firstName'], p['lastName'], p['group'], p.get('email', ''), p.get('phone', ''), 'Oui' if p.get('invoiceRequested') else 'Non', p.get('vatNumber', ''), row['count'], row['total'], ', '.join(g['firstName']+' '+g['lastName'] for g in p['guests']), p.get('paymentAcceptedAt', ''), p.get('paymentTerms', ''), 'À vérifier par virement']])
     return Response('\ufeff' + output.getvalue(), mimetype='text/csv; charset=utf-8', headers={'Content-Disposition': 'attachment; filename=BNI_Soignies_inscriptions.csv'})
 
 
@@ -291,6 +325,7 @@ def clean_tests():
         return jsonify(error='Origine non autorisée.'), 403
     with database() as db:
         db.execute('DELETE FROM email_outbox WHERE reference IN (SELECT reference FROM registrations WHERE is_test=1)')
+        db.execute('DELETE FROM email_deliveries WHERE reference IN (SELECT reference FROM registrations WHERE is_test=1)')
         result = db.execute('DELETE FROM registrations WHERE is_test=1')
     return jsonify(removed=result.rowcount)
 
@@ -299,6 +334,6 @@ def clean_tests():
 @admin_required
 def notification_status():
     with database() as db:
-        counts = {r['status']: r['n'] for r in db.execute('SELECT status, COUNT(*) n FROM email_outbox GROUP BY status')}
-        latest = [dict(r) for r in db.execute('SELECT reference,status,attempts,sent_at,last_error FROM email_outbox ORDER BY rowid DESC LIMIT 10')]
+        counts = {r['status']: r['n'] for r in db.execute('SELECT status, COUNT(*) n FROM email_deliveries GROUP BY status')}
+        latest = [dict(r) for r in db.execute('SELECT reference,kind,status,attempts,sent_at,last_error FROM email_deliveries ORDER BY rowid DESC LIMIT 10')]
     return jsonify(enabled=NOTIFICATIONS_ENABLED, recipient=NOTIFY_TO, counts=counts, latest=latest)
