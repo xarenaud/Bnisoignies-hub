@@ -524,6 +524,7 @@ def create_app():
             member.network_type=network_type
             if network_type=="OFF":
                 member.network_access_enabled=True
+                ensure_off_network_features()
             audit(account,"MEMBER_NETWORK_DATE_UPDATED","member",member.id,f"{network_type}; effective={effective.isoformat()}")
             db.session.commit()
             return member_payload(member)
@@ -531,6 +532,7 @@ def create_app():
         member.network_type=network_type
         if network_type=="OFF":
             member.network_access_enabled=True
+            ensure_off_network_features()
         db.session.add(MemberNetworkHistory(member_id=member.id,network_type=network_type,start_date=effective,changed_by_account_id=account.id))
         audit(account,"MEMBER_NETWORK_CHANGED","member",member.id,f"{current.network_type if current else 'UNKNOWN'}->{network_type}; effective={effective.isoformat()}")
         db.session.commit()
@@ -862,6 +864,23 @@ def create_app():
         "FREE":{"label":"Gratuit / test","price":0,"priceLabel":"Gratuit","durationDays":30,"rules":["Réservé principalement aux anciens membres","Permet de tester le réseau OFF avant arrêt complet ou inscription payante"],"renewable":"Durée et suite décidées avec le comité."}
     }
 
+    def ensure_off_network_features():
+        defaults={
+            "NETWORK_MODULE":("Module Réseau","Afficher le menu Réseau aux membres autorisés."),
+            "REFERRALS":("Recommandations","Encoder et suivre les recommandations entre membres."),
+            "BUSINESS":("Business généré","Encoder les Merci pour le Business et le chiffre d'affaires généré."),
+            "ONE_TO_ONE":("Tête-à-Tête","Encoder les rendez-vous individuels entre membres."),
+            "VISITORS":("Invités","Encoder et suivre les invités amenés au groupe."),
+            "ACTIVITY_SCORE":("Indice d'engagement","Calculer le score interne d'activité et les couleurs.")
+        }
+        for key,(label,desc) in defaults.items():
+            row=db.session.get(FeatureFlag,key)
+            if not row:
+                row=FeatureFlag(key=key,label=label,description=desc,enabled=True)
+                db.session.add(row)
+            else:
+                row.enabled=True
+
     def off_plan_enabled(code):
         mapping={"TRIAL":"OFF_PLAN_TRIAL","ANNUAL":"OFF_PLAN_ANNUAL","FREE":"OFF_PLAN_FREE"}
         return feature_enabled("OFF_MEMBERSHIP") and feature_enabled(mapping[code])
@@ -957,6 +976,7 @@ def create_app():
         x.status="ACTIVE";x.starts_at=start;x.ends_at=end
         member=db.session.get(Member,x.member_id)
         member.network_type="OFF";member.network_access_enabled=True
+        ensure_off_network_features()
         membership=Membership.query.filter_by(member_id=member.id).order_by(Membership.id.desc()).first()
         if not membership:membership=Membership(member_id=member.id);db.session.add(membership)
         membership.status="OFF"
@@ -1028,6 +1048,7 @@ def create_app():
             membership.status=new_status
             if new_status=="OFF":
                 member.network_access_enabled=True
+                ensure_off_network_features()
             if new_status=="OFF" and member.network_type!="OFF":
                 current=MemberNetworkHistory.query.filter_by(member_id=member.id,end_date=None).order_by(MemberNetworkHistory.start_date.desc()).first()
                 if current:current.end_date=date.today()-timedelta(days=1)
