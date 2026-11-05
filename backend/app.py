@@ -380,7 +380,7 @@ def create_app():
             pass
 
     def active_mandate(on_date=None):
-        d=on_date or date.today()
+        d=on_date or datetime.now(ZoneInfo("Europe/Brussels")).date()
         return Mandate.query.filter(Mandate.start_date<=d,Mandate.end_date>=d).order_by(Mandate.start_date.desc()).first()
 
     def current_assignment(member_id,role_id=None,on_date=None):
@@ -650,6 +650,7 @@ def create_app():
         status=(data.get("status") or "").strip().upper()
         if status not in REFERRAL_STATUSES:return {"error":"Statut invalide."},400
         note=(data.get("note") or "").strip() or None
+        new_business=False
         if status=="WON":
             try:amount=float(data.get("amount"))
             except (TypeError,ValueError):return {"error":"Encodez le chiffre d'affaires généré pour clôturer une affaire gagnée."},400
@@ -657,7 +658,7 @@ def create_app():
             existing=BusinessThanks.query.filter_by(referral_id=x.id).first()
             if not existing:
                 existing=BusinessThanks(from_member_id=x.to_member_id,credited_member_id=x.from_member_id,referral_id=x.id,amount=amount,business_date=date.today(),notes=note)
-                db.session.add(existing)
+                db.session.add(existing);new_business=True
             else:
                 existing.amount=amount;existing.notes=note
         x.status=status
@@ -667,6 +668,7 @@ def create_app():
         notify(x.from_member_id,"REFERRAL_UPDATED","Suivi de recommandation",f"{x.contact_name} : {labels.get(status,status)}.","network")
         audit(account,"REFERRAL_STATUS_UPDATED","referral",x.id,status)
         db.session.commit()
+        if new_business:network_email(x.to_member_id,x.from_member_id,"un MPB","business")
         return referral_payload(x)
 
     @app.get("/api/network/referrals/<int:referral_id>/history")
@@ -709,6 +711,7 @@ def create_app():
             notify(credited,"BUSINESS_THANKS","Merci pour le Business",f"{account.member.first_name} {account.member.last_name} vous crédite de {amount:,.2f} € de business généré.","network")
             audit(account,"BUSINESS_THANKS_CREATED","business_thanks",x.id,f"credited={credited};amount={amount}")
             db.session.commit()
+            network_email(account.member_id,credited,"un MPB","business")
             return business_payload(x),201
         q=BusinessThanks.query
         if request.args.get("scope")!="all" or not account_payload(account)["isAdmin"]:
@@ -739,6 +742,7 @@ def create_app():
             notify(partner,"ONE_TO_ONE_RECORDED","Tête-à-Tête encodé",f"{account.member.first_name} {account.member.last_name} a enregistré un Tête-à-Tête avec vous.","network")
             audit(account,"ONE_TO_ONE_CREATED","one_to_one",x.id,f"partner={partner}")
             db.session.commit()
+            network_email(account.member_id,partner,"un TAT","oto")
             return {"id":x.id,"partner":member_name(partner),"meetingDate":d.isoformat(),"durationMinutes":duration,"notes":x.notes},201
         q=OneToOne.query
         if request.args.get("scope")!="all" or not account_payload(account)["isAdmin"]:
@@ -799,19 +803,22 @@ def create_app():
         if request.args.get("memberId") and account_payload(account)["isAdmin"]:
             try:member_id=int(request.args["memberId"])
             except ValueError:return {"error":"Membre invalide."},400
-        months=6
-        try:months=max(1,min(24,int(request.args.get("months",6))))
-        except ValueError:months=6
-        today=date.today()
-        start=(today-timedelta(days=months*30))
-        refs_given=Referral.query.filter(Referral.from_member_id==member_id,Referral.created_at>=start).count()
-        refs_received=Referral.query.filter(Referral.to_member_id==member_id,Referral.created_at>=start).count()
-        refs_won=Referral.query.filter(Referral.to_member_id==member_id,Referral.status=="WON",Referral.created_at>=start).count()
-        one_to_ones=OneToOne.query.filter(db.or_(OneToOne.member_a_id==member_id,OneToOne.member_b_id==member_id),OneToOne.meeting_date>=start).count()
-        visitors=NetworkVisitor.query.filter(NetworkVisitor.invited_by_member_id==member_id,NetworkVisitor.visit_date>=start).count()
-        generated=float(db.session.query(db.func.coalesce(db.func.sum(BusinessThanks.amount),0)).filter(BusinessThanks.credited_member_id==member_id,BusinessThanks.business_date>=start).scalar() or 0)
-        received=float(db.session.query(db.func.coalesce(db.func.sum(BusinessThanks.amount),0)).filter(BusinessThanks.from_member_id==member_id,BusinessThanks.business_date>=start).scalar() or 0)
-        attendance=AttendanceRecord.query.join(Meeting,Meeting.id==AttendanceRecord.meeting_id).filter(AttendanceRecord.member_id==member_id,Meeting.date>=start).all()
+        return member_statistics(member_id,active_mandate())
+
+    def member_statistics(member_id,mandate):
+        today=datetime.now(ZoneInfo("Europe/Brussels")).date()
+        start=mandate.start_date if mandate else today
+        end=min(today,mandate.end_date) if mandate else today-timedelta(days=1)
+        end_dt=datetime.combine(end+timedelta(days=1),datetime.min.time())
+        months=max(1,((end.year-start.year)*12+end.month-start.month+1))
+        refs_given=Referral.query.filter(Referral.from_member_id==member_id,Referral.created_at>=start,Referral.created_at<end_dt).count()
+        refs_received=Referral.query.filter(Referral.to_member_id==member_id,Referral.created_at>=start,Referral.created_at<end_dt).count()
+        refs_won=Referral.query.filter(Referral.to_member_id==member_id,Referral.status=="WON",Referral.created_at>=start,Referral.created_at<end_dt).count()
+        one_to_ones=OneToOne.query.filter(db.or_(OneToOne.member_a_id==member_id,OneToOne.member_b_id==member_id),OneToOne.meeting_date>=start,OneToOne.meeting_date<=end).count()
+        visitors=NetworkVisitor.query.filter(NetworkVisitor.invited_by_member_id==member_id,NetworkVisitor.visit_date>=start,NetworkVisitor.visit_date<=end).count()
+        generated=float(db.session.query(db.func.coalesce(db.func.sum(BusinessThanks.amount),0)).filter(BusinessThanks.credited_member_id==member_id,BusinessThanks.business_date>=start,BusinessThanks.business_date<=end).scalar() or 0)
+        received=float(db.session.query(db.func.coalesce(db.func.sum(BusinessThanks.amount),0)).filter(BusinessThanks.from_member_id==member_id,BusinessThanks.business_date>=start,BusinessThanks.business_date<=end).scalar() or 0)
+        attendance=AttendanceRecord.query.join(Meeting,Meeting.id==AttendanceRecord.meeting_id).filter(AttendanceRecord.member_id==member_id,Meeting.date>=start,Meeting.date<=end).all()
         counted=[a for a in attendance if a.status in {"PRESENT","SUBSTITUTE","ABSENT"}]
         attendance_rate=100.0 if not counted else round(100*sum(1 for a in counted if a.status in {"PRESENT","SUBSTITUTE"})/len(counted),1)
         monthly=max(1,months)
@@ -822,10 +829,25 @@ def create_app():
         score=round(ref_score+oto_score+visitor_score+attendance_score)
         color="GREEN" if score>=70 else "YELLOW" if score>=50 else "RED" if score>=30 else "GREY"
         conversion=round(100*refs_won/refs_received,1) if refs_received else 0
-        estimated_given=float(db.session.query(db.func.coalesce(db.func.sum(Referral.estimated_value),0)).filter(Referral.from_member_id==member_id,Referral.created_at>=start).scalar() or 0)
-        estimated_received=float(db.session.query(db.func.coalesce(db.func.sum(Referral.estimated_value),0)).filter(Referral.to_member_id==member_id,Referral.created_at>=start).scalar() or 0)
+        estimated_given=float(db.session.query(db.func.coalesce(db.func.sum(Referral.estimated_value),0)).filter(Referral.from_member_id==member_id,Referral.created_at>=start,Referral.created_at<end_dt).scalar() or 0)
+        estimated_received=float(db.session.query(db.func.coalesce(db.func.sum(Referral.estimated_value),0)).filter(Referral.to_member_id==member_id,Referral.created_at>=start,Referral.created_at<end_dt).scalar() or 0)
         avg_won_value=round(received/refs_won,2) if refs_won else 0
-        return {"memberId":member_id,"member":member_name(member_id),"months":months,"periodStart":start.isoformat(),"periodEnd":today.isoformat(),"referralsGiven":refs_given,"referralsReceived":refs_received,"referralsWon":refs_won,"conversionRate":conversion,"oneToOnes":one_to_ones,"visitors":visitors,"businessGenerated":generated,"businessReceived":received,"estimatedValueGiven":estimated_given,"estimatedValueReceived":estimated_received,"averageWonReferralValue":avg_won_value,"attendanceRate":attendance_rate,"score":score,"scoreColor":color,"scoreBreakdown":{"referrals":round(ref_score,1),"oneToOnes":round(oto_score,1),"visitors":round(visitor_score,1),"attendance":round(attendance_score,1)},"targets":{"referralsPerMonth":5,"oneToOnesPerMonth":2,"visitorsPerMonth":1,"absenceTarget":0}}
+        return {"memberId":member_id,"member":member_name(member_id),"months":months,"periodStart":start.isoformat(),"periodEnd":end.isoformat(),"mandateId":mandate.id if mandate else None,"mandate":mandate.name if mandate else "Aucune mandature en cours","referralsGiven":refs_given,"referralsReceived":refs_received,"referralsWon":refs_won,"conversionRate":conversion,"oneToOnes":one_to_ones,"visitors":visitors,"businessGenerated":generated,"businessReceived":received,"estimatedValueGiven":estimated_given,"estimatedValueReceived":estimated_received,"averageWonReferralValue":avg_won_value,"attendanceRate":attendance_rate,"score":score,"scoreColor":color,"scoreBreakdown":{"referrals":round(ref_score,1),"oneToOnes":round(oto_score,1),"visitors":round(visitor_score,1),"attendance":round(attendance_score,1)},"targets":{"referralsPerMonth":5,"oneToOnesPerMonth":2,"visitorsPerMonth":1,"absenceTarget":0}}
+
+    @app.get("/api/me/past-stats")
+    def past_member_stats():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        today=datetime.now(ZoneInfo("Europe/Brussels")).date()
+        mandates=Mandate.query.filter(Mandate.end_date<today).order_by(Mandate.start_date.desc()).all()
+        options=[{"id":m.id,"name":m.name,"startDate":m.start_date.isoformat(),"endDate":m.end_date.isoformat()} for m in mandates]
+        selected=None
+        if request.args.get("mandateId"):
+            try:selected=next((m for m in mandates if m.id==int(request.args["mandateId"])),None)
+            except ValueError:return {"error":"Mandature invalide."},400
+            if not selected:return {"error":"Mandature terminée introuvable."},404
+        elif mandates:selected=mandates[0]
+        return {"mandates":options,"stats":member_statistics(account.member_id,selected) if selected else None}
 
     def contribution_window(start_date,end_date):
         members=Member.query.all()
@@ -860,6 +882,9 @@ def create_app():
                 start=meetings[0].date;end=today
             else:
                 start=today-timedelta(days=7);end=today
+        mandate=active_mandate()
+        if mandate:start=max(start,mandate.start_date);end=min(end,mandate.end_date)
+        else:start=today;end=today-timedelta(days=1)
         return contribution_window(start,end)
 
     @app.get("/api/network/hub-summary")
@@ -868,10 +893,10 @@ def create_app():
         if err:return err
         mandate=active_mandate()
         if mandate:
-            start,end=mandate.start_date,mandate.end_date
+            start,end=mandate.start_date,min(date.today(),mandate.end_date)
             name=mandate.name
         else:
-            start=date.today().replace(month=1,day=1);end=date.today();name="Période en cours"
+            start=date.today();end=start-timedelta(days=1);name="Aucune mandature en cours"
         total=float(db.session.query(db.func.coalesce(db.func.sum(BusinessThanks.amount),0)).filter(BusinessThanks.business_date>=start,BusinessThanks.business_date<=end).scalar() or 0)
         referrals=Referral.query.filter(Referral.created_at>=datetime.combine(start,datetime.min.time()),Referral.created_at<datetime.combine(end+timedelta(days=1),datetime.min.time())).count()
         won=Referral.query.filter(Referral.status=="WON",Referral.created_at>=datetime.combine(start,datetime.min.time()),Referral.created_at<datetime.combine(end+timedelta(days=1),datetime.min.time())).count()
@@ -902,22 +927,12 @@ def create_app():
         account,err=require_admin()
         if err:return err
         if not account.is_system_admin and not feature_enabled("NETWORK_MODULE"):return {"error":"Le module Réseau n'est pas activé."},403
-        months=max(1,min(24,int(request.args.get("months",6) or 6)))
-        today=date.today();start=today-timedelta(days=months*30)
         rows=[]
-        active=Member.query.join(Membership,Membership.member_id==Member.id).filter(Membership.status.in_(["ACTIVE","ONBOARDING","OFF"])).all()
-        seen=set()
-        for m in active:
-            if m.id in seen:continue
-            seen.add(m.id)
-            refs=Referral.query.filter(Referral.from_member_id==m.id,Referral.created_at>=start).count()
-            otos=OneToOne.query.filter(db.or_(OneToOne.member_a_id==m.id,OneToOne.member_b_id==m.id),OneToOne.meeting_date>=start).count()
-            visitors=NetworkVisitor.query.filter(NetworkVisitor.invited_by_member_id==m.id,NetworkVisitor.visit_date>=start).count()
-            generated=float(db.session.query(db.func.coalesce(db.func.sum(BusinessThanks.amount),0)).filter(BusinessThanks.credited_member_id==m.id,BusinessThanks.business_date>=start).scalar() or 0)
-            att=AttendanceRecord.query.join(Meeting,Meeting.id==AttendanceRecord.meeting_id).filter(AttendanceRecord.member_id==m.id,Meeting.date>=start).all()
-            counted=[a for a in att if a.status in {"PRESENT","SUBSTITUTE","ABSENT"}];rate=100 if not counted else 100*sum(1 for a in counted if a.status in {"PRESENT","SUBSTITUTE"})/len(counted)
-            score=round(min(35,35*(refs/months)/5)+min(25,25*(otos/months)/2)+min(20,20*(visitors/months))+min(20,20*rate/100))
-            rows.append({"memberId":m.id,"member":f"{m.first_name} {m.last_name}","company":m.company,"networkType":m.network_type or "OFFICIAL_BNI","score":score,"referralsGiven":refs,"oneToOnes":otos,"visitors":visitors,"businessGenerated":generated})
+        for m in Member.query.order_by(Member.id).all():
+            membership=active_membership_for(m.id)
+            if not membership or membership.status not in {"ACTIVE","ONBOARDING","OFF"}:continue
+            stats=member_statistics(m.id,active_mandate())
+            rows.append({**stats,"company":m.company,"networkType":m.network_type or "OFFICIAL_BNI"})
         rows.sort(key=lambda x:(x["score"],x["businessGenerated"],x["referralsGiven"]),reverse=True)
         for i,x in enumerate(rows,1):x["rank"]=i
         return jsonify(rows)
@@ -2036,29 +2051,24 @@ Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet e-mai
             try:smtp.quit()
             except Exception:pass
 
+    def network_email(source_id,target_id,kind,tab):
+        # Only the recipient, never the encoder or the committees; no contact/business details.
+        try:
+            target=db.session.get(Member,target_id)
+            source=db.session.get(Member,source_id)
+            if not target or not source or source_id==target_id:return False
+            email=target.user_account.email if target.user_account else target.email
+            if not email:return False
+            name=f"{source.first_name} {source.last_name}"
+            link=os.getenv("APP_URL","https://hub.bim-soignies.be").strip().rstrip("/") or "https://hub.bim-soignies.be"
+            body=f"Bonjour {target.first_name},\n\nLe membre {name} t'a fait {kind}.\nOuvre ton app pour consulter :\n{link}/?network={tab}\n"
+            return send_simple_email(email,f"Hub — {name} : {kind}",body)
+        except Exception:
+            app.logger.exception("Network email delivery failed")
+            return False
+
     def referral_email(x):
-        target=db.session.get(Member,x.to_member_id);source=db.session.get(Member,x.from_member_id)
-        if not target or not target.email:return False
-        app_url=os.getenv("APP_URL","").strip().rstrip("/")
-        link=(app_url+"?network=referrals") if app_url else ""
-        body=f"""Bonjour {target.first_name},
-
-{source.first_name} {source.last_name} vous envoie une recommandation.
-
-Contact : {x.contact_name}
-Téléphone : {x.contact_phone or "—"}
-E-mail : {x.contact_email or "—"}
-Société : {x.company or "—"}
-
-Objet / contexte :
-{x.notes or "—"}
-
-Merci d'assurer le suivi dans le Hub :
-{link}
-
-Statut initial : pas encore contacté.
-"""
-        return send_simple_email(target.email,f"Hub — {source.first_name} {source.last_name} vous envoie une recommandation",body)
+        return network_email(x.from_member_id,x.to_member_id,"une recommandation","referrals")
 
     def send_request_email(x,account,targets):
         host=os.getenv("SMTP_HOST","").strip()

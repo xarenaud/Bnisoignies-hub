@@ -27,6 +27,7 @@ class MemberFrontTests(unittest.TestCase):
             hub.db.session.add(hub.Membership(member_id=m.id,status=status,start_date=date.today()))
             hub.db.session.add(hub.AuthSession(account_id=a.id,token_hash=hashlib.sha256(key.encode()).hexdigest(),expires_at=datetime.utcnow()+timedelta(hours=1)))
             self.ids[key]=m.id;self.headers[key]={'Authorization':'Bearer '+key}
+        hub.db.session.add(hub.Mandate(name='Actuelle',start_date=date.today()-timedelta(days=15),end_date=date.today()+timedelta(days=15)))
         hub.db.session.commit()
 
     def tearDown(self):
@@ -85,5 +86,45 @@ class MemberFrontTests(unittest.TestCase):
         profile=self.client.get('/api/me/profile',headers=self.headers['off']).get_json()
         self.assertIn('subscription',profile)
         self.assertEqual(profile['subscription']['startsAt'],date.today().isoformat())
+
+    def test_mandate_boundaries_and_private_archive(self):
+        old=hub.Mandate(name='Passée',start_date=date.today()-timedelta(days=60),end_date=date.today()-timedelta(days=16))
+        hub.db.session.add(old);hub.db.session.flush()
+        for day,amount in [(old.start_date,10),(old.end_date,20),(date.today(),30),(date.today()+timedelta(days=1),40)]:
+            hub.db.session.add(hub.BusinessThanks(from_member_id=self.ids['off'],credited_member_id=self.ids['active'],amount=amount,business_date=day))
+        hub.db.session.commit()
+        current=self.client.get('/api/network/stats?months=24',headers=self.headers['active']).get_json()
+        self.assertEqual(current['businessGenerated'],30)
+        self.assertEqual(current['mandate'],'Actuelle')
+        past=self.client.get(f'/api/me/past-stats?mandateId={old.id}&memberId={self.ids["off"]}',headers=self.headers['active']).get_json()
+        self.assertEqual(past['stats']['businessGenerated'],30)
+        self.assertEqual(past['stats']['memberId'],self.ids['active'])
+        group=self.client.get('/api/network/hub-summary',headers=self.headers['active']).get_json()
+        self.assertEqual(group['businessTotal'],30)
+        self.assertEqual(self.client.get('/api/me/past-stats').status_code,401)
+        self.assertEqual(self.client.get('/api/me/past-stats?mandateId=9999',headers=self.headers['active']).status_code,404)
+
+    def test_email_recipient_and_minimal_content(self):
+        from unittest.mock import patch
+        with patch.dict(os.environ,{'SMTP_HOST':'smtp.test','SMTP_FROM':'hub@example.test','SMTP_STARTTLS':'false'}),patch.object(hub.smtplib,'SMTP') as smtp:
+            sent=smtp.return_value.send_message
+            response=self.client.post('/api/network/referrals',headers=self.headers['active'],json={'toMemberId':self.ids['off'],'contactName':'CONTACT SECRET','notes':'PRIVATE'})
+            self.assertEqual(response.status_code,201)
+            self.client.post('/api/network/business',headers=self.headers['active'],json={'creditedMemberId':self.ids['off'],'amount':100})
+            self.client.post('/api/network/one-to-ones',headers=self.headers['active'],json={'partnerMemberId':self.ids['off']})
+            self.assertEqual(sent.call_count,3)
+            for call in sent.call_args_list:
+                msg=call.args[0]
+                self.assertEqual(msg['To'],'off@example.test')
+                self.assertIsNone(msg['Cc']);self.assertIsNone(msg['Bcc'])
+                body=msg.get_content()
+                self.assertIn('?network=',body)
+                self.assertNotIn('CONTACT SECRET',body);self.assertNotIn('PRIVATE',body)
+            rid=response.get_json()['id']
+            for i in range(2):
+                r=self.client.patch(f'/api/network/referrals/{rid}',headers=self.headers['off'],json={'status':'WON','amount':50})
+                self.assertEqual(r.status_code,200)
+            self.assertEqual(sent.call_count,4)
+            self.assertEqual(sent.call_args.args[0]['To'],'active@example.test')
 
 if __name__=='__main__':unittest.main()
