@@ -32,6 +32,26 @@ class RegistrationTests(unittest.TestCase):
         with app.database() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM registrations').fetchone()[0], 1)
 
+    def test_resend_targets_only_organizer_and_is_idempotent(self):
+        registration = self.client.post('/register.php', json=self.payload).json
+        with patch.object(app, 'send_notification'):
+            while app.deliver_pending():
+                pass
+        payload = {'references': [registration['reference']], 'requestId': 'organizer-resend-test-001'}
+        self.assertEqual(self.client.post('/api/admin/notifications/resend-organizer', json=payload).status_code, 401)
+        response = self.client.post('/api/admin/notifications/resend-organizer', json=payload, headers=self.auth)
+        self.assertEqual(response.json['queued'], [registration['reference']])
+        with app.database() as db:
+            self.assertEqual(db.execute("SELECT status FROM email_deliveries WHERE kind='participant'").fetchone()[0], 'sent')
+            self.assertEqual(db.execute("SELECT status FROM email_deliveries WHERE kind='organizer'").fetchone()[0], 'pending')
+        with patch.object(app, 'send_notification') as sender:
+            self.assertTrue(app.deliver_pending())
+            self.assertFalse(app.deliver_pending())
+            sender.assert_called_once()
+        self.assertEqual(self.client.post('/api/admin/notifications/resend-organizer', json=payload, headers=self.auth).json, response.json)
+        with app.database() as db:
+            self.assertEqual(db.execute("SELECT status FROM email_deliveries WHERE kind='organizer'").fetchone()[0], 'sent')
+
     def test_validation(self):
         for update in [{'count': 0}, {'count': True}, {'guests': []}, {'group': ' '}, {'firstName': '\n'}]:
             self.assertEqual(self.client.post('/register.php', json={**self.payload, **update}).status_code, 422)

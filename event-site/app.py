@@ -62,6 +62,9 @@ with database() as db:
       SELECT reference,'organizer',status,attempts,next_attempt,claimed_at,sent_at,last_error FROM email_outbox;
     INSERT OR IGNORE INTO email_deliveries(reference,kind)
       SELECT reference,'organizer' FROM registrations WHERE is_test=0;
+    CREATE TABLE IF NOT EXISTS organizer_resends (
+      request_id TEXT PRIMARY KEY, result TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS rate_limits (
       address_hash TEXT NOT NULL, window INTEGER NOT NULL, count INTEGER NOT NULL,
       PRIMARY KEY(address_hash, window)
@@ -79,7 +82,8 @@ def notification_message(row):
     message['From'] = os.environ.get('SMTP_FROM', '').strip()
     message['To'] = payload['email'] if participant else NOTIFY_TO
     message['Reply-To'] = NOTIFY_TO
-    message['Message-ID'] = f"<{row['reference']}.{row['kind']}@event.bim-soignies.be>"
+    attempt = row['attempts'] if 'attempts' in row.keys() else 0
+    message['Message-ID'] = f"<{row['reference']}.{row['kind']}.{attempt}@event.bim-soignies.be>"
     guests = '\n'.join(f"  {i}. {g['firstName']} {g['lastName']}" for i, g in enumerate(payload['guests'], 1)) or '  Aucun'
     greeting = f"Bonjour {payload['firstName']},\nVotre inscription est enregistrée.\n" if participant else 'NOUVELLE INSCRIPTION\n'
     invoice = ('Facture / note de frais demandée — TVA : ' + payload.get('vatNumber', '')) if payload.get('invoiceRequested') else 'Facture / note de frais : non demandée'
@@ -341,3 +345,35 @@ def notification_status():
         counts = {r['status']: r['n'] for r in db.execute('SELECT status, COUNT(*) n FROM email_deliveries GROUP BY status')}
         latest = [dict(r) for r in db.execute('SELECT reference,kind,status,attempts,sent_at,last_error FROM email_deliveries ORDER BY rowid DESC LIMIT 10')]
     return jsonify(enabled=NOTIFICATIONS_ENABLED, recipient=NOTIFY_TO, counts=counts, latest=latest)
+
+
+@app.post('/api/admin/notifications/resend-organizer')
+@admin_required
+def resend_organizer():
+    if not same_origin():
+        return jsonify(error='Origine non autorisée.'), 403
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify(error='Données invalides.'), 422
+    refs = data.get('references')
+    request_id = data.get('requestId')
+    if (not isinstance(request_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{12,80}', request_id) or
+        not isinstance(refs, list) or not 1 <= len(refs) <= 50 or
+        not all(isinstance(ref, str) and re.fullmatch(r'BNI-[A-F0-9]{10}', ref) for ref in refs)):
+        return jsonify(error='Références ou identifiant de demande invalides.'), 422
+    refs = list(dict.fromkeys(refs))
+    with database() as db:
+        db.execute('BEGIN IMMEDIATE')
+        existing = db.execute('SELECT result FROM organizer_resends WHERE request_id=?', (request_id,)).fetchone()
+        if existing:
+            return jsonify(json.loads(existing['result']))
+        eligible = []
+        for ref in refs:
+            row = db.execute("SELECT o.status FROM email_deliveries o JOIN registrations r USING(reference) WHERE o.reference=? AND o.kind='organizer' AND r.is_test=0", (ref,)).fetchone()
+            if row and row['status'] == 'sent':
+                db.execute("UPDATE email_deliveries SET status='pending',next_attempt=0,sent_at=NULL,last_error=NULL WHERE reference=? AND kind='organizer'", (ref,))
+                eligible.append(ref)
+        result = dict(queued=eligible, recipient=NOTIFY_TO)
+        db.execute('INSERT INTO organizer_resends VALUES(?,?)', (request_id, json.dumps(result)))
+    mail_wake.set()
+    return jsonify(result)
