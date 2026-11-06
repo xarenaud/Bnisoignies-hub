@@ -371,7 +371,7 @@ def create_app():
 
     @app.get("/api")
     def api():
-        return {"name":"BNI Soignies Hub API","version":"0.1.0"}
+        return {"name":"HUB Soignies API","version":"0.1.0"}
 
     def audit(account,action,entity_type=None,entity_id=None,details=None):
         try:
@@ -495,8 +495,8 @@ def create_app():
         "ONE_TO_ONE":("Tête-à-Tête","Encoder les rendez-vous individuels entre membres."),
         "VISITORS":("Invités","Encoder et suivre les invités amenés au groupe."),
         "ATTENDANCE":("Présences","Mesurer les présences, suppléants et absences."),
-        "NETWORK_OFF":("Réseau OFF","Activer les membres du réseau interne hors franchise BNI."),
-        "MEMBERSHIP_CHOICE":("Choix BNI / OFF","Permettre de choisir le réseau à l'entrée d'un nouveau membre."),
+        "NETWORK_OFF":("Réseau OFF","Activer les membres du réseau OFF."),
+        "MEMBERSHIP_CHOICE":("Choix HUB / OFF","Permettre de choisir le réseau à l'entrée d'un nouveau membre."),
         "ACTIVITY_SCORE":("Indice d'engagement","Calculer le score interne d'activité et les couleurs.")
     }
 
@@ -1231,7 +1231,7 @@ def create_app():
         for col in ws.columns:
             ws.column_dimensions[col[0].column_letter].width=min(max(12,max(len(str(cell.value or "")) for cell in col)+2),40)
         out=io.BytesIO();wb.save(out);out.seek(0)
-        return send_file(out,as_attachment=True,download_name=f"BNI-Soignies-Membres-{date.today().isoformat()}.xlsx",mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        return send_file(out,as_attachment=True,download_name=f"HUB-Soignies-Membres-{date.today().isoformat()}.xlsx",mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     @app.post("/api/members/<int:member_id>/invite")
     def invite_member(member_id):
@@ -1258,18 +1258,18 @@ def create_app():
         host=os.getenv("SMTP_HOST","").strip();sender=os.getenv("SMTP_FROM","").strip()
         if host and sender:
             msg=EmailMessage()
-            msg["Subject"]="BNI Soignies Hub — votre invitation"
+            msg["Subject"]="HUB Soignies — votre invitation"
             msg["From"]=sender;msg["To"]=member.email
             msg.set_content(f"""Bonjour {member.first_name},
 
-Vous êtes invité(e) à découvrir BNI Soignies Hub.
+Vous êtes invité(e) à découvrir HUB Soignies.
 
 Xavier vous propose de tester l'application et de lui remonter vos remarques, idées ou éventuels problèmes rencontrés.
 
 Activez votre accès avec ce lien (valable 48 heures) :
 {activation_url}
 
-À bientôt sur BNI Soignies Hub.""")
+À bientôt sur HUB Soignies.""")
             port=int(os.getenv("SMTP_PORT","587"));user=os.getenv("SMTP_USER","").strip();password=os.getenv("SMTP_PASSWORD","")
             use_ssl=os.getenv("SMTP_SSL","false").lower() in {"1","true","yes"}
             smtp=(smtplib.SMTP_SSL(host,port,timeout=15) if use_ssl else smtplib.SMTP(host,port,timeout=15))
@@ -1298,11 +1298,11 @@ Activez votre accès avec ce lien (valable 48 heures) :
             host=os.getenv("SMTP_HOST","").strip();sender=os.getenv("SMTP_FROM","").strip()
             if host and sender:
                 msg=EmailMessage()
-                msg["Subject"]="BNI Soignies Hub — réinitialisation du mot de passe"
+                msg["Subject"]="HUB Soignies — réinitialisation du mot de passe"
                 msg["From"]=sender;msg["To"]=account.email
                 msg.set_content(f"""Bonjour {account.member.first_name},
 
-Une demande de réinitialisation de votre mot de passe BNI Soignies Hub a été reçue.
+Une demande de réinitialisation de votre mot de passe HUB Soignies a été reçue.
 
 Choisissez un nouveau mot de passe avec ce lien (valable 1 heure) :
 {reset_url}
@@ -1777,7 +1777,7 @@ Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet e-mai
         if err:return err
         from io import BytesIO
         from openpyxl import Workbook
-        wb=Workbook();ws=wb.active;ws.title="BNI Alumni"
+        wb=Workbook();ws=wb.active;ws.title="HUB Alumni"
         ws.append(["Prénom","Nom","Société","Activité","Email","Téléphone","Date entrée","Date sortie"])
         rows=db.session.query(Member,Membership).join(Membership,Membership.member_id==Member.id).filter(Membership.status.in_(["FORMER","ALUMNI"])).order_by(Member.last_name,Member.first_name).all()
         for m,ms in rows:ws.append([m.first_name,m.last_name,m.company,m.activity,m.email,m.phone,ms.start_date,ms.end_date])
@@ -2090,7 +2090,7 @@ Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet e-mai
         msg=EmailMessage()
         labels={"INFOMERCIAL":"Infomercial","COMMUNICATION":"Communication","TRAINING":"Formation","MENTORING":"Mentorat","EVENT":"Événement","INVITATION":"Invitation"}
         member=account.member
-        msg["Subject"]=f"BNI Soignies Hub — nouvelle demande {labels.get(x.type,x.type)}"
+        msg["Subject"]=f"HUB Soignies — nouvelle demande {labels.get(x.type,x.type)}"
         msg["From"]=sender
         msg["To"]=", ".join(recipients)
         msg.set_content(f"""Nouvelle demande envoyée par {member.first_name} {member.last_name}.
@@ -2100,7 +2100,7 @@ Sujet : {x.title or x.guest_name or "—"}
 Message :
 {x.message or "—"}
 
-Cette demande est également disponible dans BNI Soignies Hub.""")
+Cette demande est également disponible dans HUB Soignies.""")
         if x.attachment_data:
             maintype,subtype=(x.attachment_type or "application/octet-stream").split("/",1) if "/" in (x.attachment_type or "") else ("application","octet-stream")
             msg.add_attachment(x.attachment_data,maintype=maintype,subtype=subtype,filename=x.attachment_name or "piece-jointe")
@@ -2262,7 +2262,7 @@ Cette demande est également disponible dans BNI Soignies Hub.""")
         if offer:
             subscription={"label":OFF_PLANS.get(offer.plan_code,{}).get("label",offer.plan_code),"startsAt":offer.starts_at.isoformat() if offer.starts_at else None,"endsAt":offer.ends_at.isoformat() if offer.ends_at else None}
         elif membership:
-            subscription={"label":"Membre OFF — aucun forfait OFF actif enregistré" if m.network_type=="OFF" else "Adhésion BNI" if membership.status in {"ACTIVE","ONBOARDING"} else "Ancien membre","startsAt":membership.start_date.isoformat() if membership.start_date else None,"endsAt":membership.end_date.isoformat() if membership.end_date else None}
+            subscription={"label":"Membre OFF — aucun forfait OFF actif enregistré" if m.network_type=="OFF" else "Adhésion HUB" if membership.status in {"ACTIVE","ONBOARDING"} else "Ancien membre","startsAt":membership.start_date.isoformat() if membership.start_date else None,"endsAt":membership.end_date.isoformat() if membership.end_date else None}
         return {"id":m.id,"firstName":m.first_name,"lastName":m.last_name,"company":m.company,"activity":m.activity,"email":account.email,"phone":m.phone,"roles":account_payload(account)["roles"],"subscription":subscription}
 
     @app.route("/api/me/profile",methods=["PATCH"])
@@ -2524,7 +2524,7 @@ Cette demande est également disponible dans BNI Soignies Hub.""")
         launch_date=date(2026,10,1)
         launch_meeting=Meeting.query.filter_by(date=launch_date).first()
         if not launch_meeting:
-            launch_meeting=Meeting(date=launch_date,start_time=datetime.strptime("07:00","%H:%M").time(),type="REGULAR",status="PLANNED",notes="Présentation BNI Soignies Hub — rotation de lancement exceptionnelle")
+            launch_meeting=Meeting(date=launch_date,start_time=datetime.strptime("07:00","%H:%M").time(),type="REGULAR",status="PLANNED",notes="Présentation HUB Soignies — rotation de lancement exceptionnelle")
             db.session.add(launch_meeting);db.session.flush()
         launch_people=[]
         for first in ["Amélie","Simon","Xavier"]:
