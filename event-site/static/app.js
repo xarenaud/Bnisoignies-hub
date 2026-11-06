@@ -1,3 +1,4 @@
+const UNIT_PRICE = 10;
 const groups=['Soignies','Mons','Enghien','Binche','Saint-Ghislain','Le Roeulx','Jurbise','La Louvière','Braine-le-Comte','Nivelles','Ath'];
 for(const group of groups){const tag=document.createElement('span');tag.textContent=group;document.querySelector('#groups').append(tag);}
 const form=document.querySelector('#form'),count=document.querySelector('#count'),guests=document.querySelector('#guests'),status=document.querySelector('#status');
@@ -17,10 +18,10 @@ function update(){
     }
     guests.append(row);
   }
-  document.querySelector('#total').textContent=`${n*15} €`;
-  document.querySelector('#calculation').textContent=`${n} × 15 €`;
-  document.querySelector('#paymentTerms').textContent=`Je confirme mon inscription pour ${n} personne(s) et m’engage à payer ${n*15} €, même en cas d’absence de tout ou partie des participants.`;
-  document.querySelector('#submit').textContent=`Confirmer et m’engager à payer ${n*15} €`;
+  document.querySelector('#total').textContent=`${n*UNIT_PRICE} €`;
+  document.querySelector('#calculation').textContent=`${n} × ${UNIT_PRICE} €`;
+  document.querySelector('#paymentTerms').textContent=`Je confirme mon inscription pour ${n} personne(s) et m’engage à payer ${n*UNIT_PRICE} €, même en cas d’absence de tout ou partie des participants.`;
+  document.querySelector('#submit').textContent=`Confirmer et m’engager à payer ${n*UNIT_PRICE} €`;
   document.querySelector('#paymentAccepted').checked=false;
 }
 count.addEventListener('input',update);

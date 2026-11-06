@@ -9,7 +9,7 @@ Site public autonome de l’événement, servi par Flask/Gunicorn. Racine Railwa
 - Volume persistant monté en `/data`, variable `BNI_EVENT_DATA_DIR=/data`.
 - `BNI_EVENT_RATE_SECRET` : secret pour le hachage des clés de limitation de débit.
 
-Les inscriptions sont conservées dans SQLite sur le volume privé. Le total est calculé côté serveur à 15 EUR par personne. L’export conserve le statut « À vérifier par virement » : aucun rapprochement bancaire automatique. Les essais authentifiés marqués `isTest:true` sont exclus de l’export et peuvent être nettoyés via POST `/api/admin/test-registrations/cleanup` ; cette route ne supprime jamais de vraies inscriptions.
+Les inscriptions sont conservées dans SQLite sur le volume privé. Le total est calculé côté serveur à 10 EUR par personne. L’export conserve le statut « À vérifier par virement » : aucun rapprochement bancaire automatique. Les essais authentifiés marqués `isTest:true` sont exclus de l’export et peuvent être nettoyés via POST `/api/admin/test-registrations/cleanup` ; cette route ne supprime jamais de vraies inscriptions.
 
 Tests : `python -m unittest -v test_app.py` (base temporaire indépendante).
 

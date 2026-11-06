@@ -30,6 +30,7 @@ RATE_SECRET = os.environ.get('BNI_EVENT_RATE_SECRET', ADMIN_PASSWORD)
 NOTIFICATIONS_ENABLED = os.environ.get('BNI_EVENT_NOTIFICATIONS_ENABLED', 'false').lower() == 'true'
 NOTIFY_TO = os.environ.get('BNI_EVENT_NOTIFY_TO', 'event@bim-soignies.be')
 mail_wake = threading.Event()
+UNIT_PRICE = 10
 
 
 def database():
@@ -267,7 +268,7 @@ def register():
         return jsonify(error='Renseignez le numéro de TVA pour la facture / note de frais.'), 422
     payload = {k: data[k].strip() for k in ('firstName', 'lastName', 'group')}
     payload.update(count=count, guests=[{k: g[k].strip() for k in ('firstName', 'lastName')} for g in guests])
-    payload.update(email=email.strip().lower(), phone=phone.strip(), invoiceRequested=invoice, vatNumber=vat.strip().upper() if invoice else '', paymentAccepted=True, paymentTermsVersion='2026-11-05-v1', paymentTerms='Inscription avec obligation de paiement. Le montant total reste dû même en cas d’absence.')
+    payload.update(email=email.strip().lower(), phone=phone.strip(), invoiceRequested=invoice, vatNumber=vat.strip().upper() if invoice else '', paymentAccepted=True, unitPrice=UNIT_PRICE, paymentTermsVersion='2026-11-06-v2', paymentTerms='Inscription avec obligation de paiement. Le montant total reste dû même en cas d’absence.')
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     fingerprint = hashlib.sha256(encoded.encode()).hexdigest()
     is_test = bool(data.get('isTest') is True and is_admin())
@@ -293,11 +294,11 @@ def register():
         payload['paymentAcceptedAt'] = created_at
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         db.execute('INSERT INTO registrations(reference,fingerprint,payload,count,total,created_at,is_test) VALUES(?,?,?,?,?,?,?)',
-                   (reference, fingerprint, encoded, count, count * 15, created_at, int(is_test)))
+                   (reference, fingerprint, encoded, count, count * UNIT_PRICE, created_at, int(is_test)))
         if not is_test or (data.get('notifyTest') is True and is_admin()):
             db.executemany('INSERT INTO email_deliveries(reference,kind) VALUES(?,?)', [(reference, 'organizer'), (reference, 'participant')])
     mail_wake.set()
-    return jsonify(reference=reference, count=count, total=count * 15), 201
+    return jsonify(reference=reference, count=count, total=count * UNIT_PRICE), 201
 
 
 @app.get('/admin/inscriptions.csv')

@@ -26,7 +26,7 @@ class RegistrationTests(unittest.TestCase):
     def test_registration_total_retry_persistence(self):
         r = self.client.post('/register.php', json={**self.payload, 'total': 1})
         self.assertEqual(r.status_code, 201)
-        self.assertEqual(r.json['total'], 45)
+        self.assertEqual(r.json['total'], 30)
         self.assertEqual(self.client.post('/register.php', json=self.payload).json['reference'], r.json['reference'])
         importlib.reload(app)
         with app.database() as db:
@@ -63,7 +63,7 @@ class RegistrationTests(unittest.TestCase):
         with patch.dict(os.environ, {'SMTP_FROM': 'hub@bim-soignies.be'}):
             msg = app.notification_message(row)
         self.assertEqual(msg['To'], 'event@bim-soignies.be')
-        for expected in ['45 EUR', 'Anne Test', 'Marc A', 'Julie B', 'Un autre groupe', 'même en cas d’absence']:
+        for expected in ['30 EUR', 'Anne Test', 'Marc A', 'Julie B', 'Un autre groupe', 'même en cas d’absence']:
             self.assertIn(expected, msg.get_content())
         with patch.object(app, 'send_notification', side_effect=TimeoutError):
             self.assertTrue(app.deliver_pending())
