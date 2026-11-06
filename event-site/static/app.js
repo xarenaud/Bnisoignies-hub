@@ -1,6 +1,4 @@
 const UNIT_PRICE = 10;
-const groups=['Soignies','Mons','Enghien','Binche','Saint-Ghislain','Le Roeulx','Jurbise','La Louvière','Braine-le-Comte','Nivelles','Ath'];
-for(const group of groups){const tag=document.createElement('span');tag.textContent=group;document.querySelector('#groups').append(tag);}
 const form=document.querySelector('#form'),count=document.querySelector('#count'),guests=document.querySelector('#guests'),status=document.querySelector('#status');
 const invoiceRequested=document.querySelector('#invoiceRequested'),vatNumber=document.querySelector('#vatNumber');
 invoiceRequested.addEventListener('change',()=>{document.querySelector('#billingFields').hidden=!invoiceRequested.checked;vatNumber.required=invoiceRequested.checked;if(!invoiceRequested.checked)vatNumber.value='';});
