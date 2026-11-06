@@ -125,7 +125,7 @@ def send_notification(row):
         username = os.environ.get('SMTP_USER', '').strip()
         if username:
             client.login(username, os.environ.get('SMTP_PASSWORD', ''))
-        refused = client.send_message(notification_message(row))
+        refused = client.send_message(row if isinstance(row, EmailMessage) else notification_message(row))
         if refused:
             raise smtplib.SMTPRecipientsRefused(refused)
 
@@ -439,3 +439,43 @@ def organizer_excel():
         z.writestr('xl/_rels/workbook.xml.rels', '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>')
         z.writestr('xl/worksheets/sheet1.xml', sheet)
     return Response(output.getvalue(), mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers={'Content-Disposition': 'attachment; filename=BNI_Soignies_inscriptions.xlsx'})
+
+
+@app.post('/api/admin/invitation-test')
+@admin_required
+def invitation_test():
+    if not same_origin():
+        return jsonify(error='Origine non autorisée.'), 403
+    # Restricted to the organizer's explicitly requested test address.
+    recipient = 'xavier@cx-com.be'
+    with database() as db:
+        db.execute("CREATE TABLE IF NOT EXISTS invitation_tests (request_id TEXT PRIMARY KEY, status TEXT NOT NULL, created_at TEXT NOT NULL)")
+    data = request.get_json(silent=True) or {}
+    request_id = data.get('requestId') if isinstance(data, dict) else None
+    if not isinstance(request_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{12,80}', request_id):
+        return jsonify(error='Identifiant de demande invalide.'), 422
+    with database() as db:
+        db.execute('BEGIN IMMEDIATE')
+        existing = db.execute('SELECT status FROM invitation_tests WHERE request_id=?', (request_id,)).fetchone()
+        if existing:
+            return jsonify(status=existing['status'], recipient=recipient)
+        db.execute('INSERT INTO invitation_tests VALUES(?,?,?)', (request_id, 'sending', datetime.now(ZoneInfo('Europe/Brussels')).isoformat()))
+    message = EmailMessage()
+    message['Subject'] = '[TEST] Inter BNI — 26 novembre : 16 groupes, une volonté d’avancer ensemble !'
+    message['From'] = 'hub@bim-soignies.be'
+    message['To'] = recipient
+    message['Reply-To'] = 'event@bim-soignies.be'
+    message['Message-ID'] = '<' + request_id + '@event.bim-soignies.be>'
+    from email.utils import formatdate
+    message['Date'] = formatdate(localtime=False)
+    message.set_content("INVITATION TEST — Inter BNI Soignies\nJeudi 26 novembre 2026, de 7 h à 10 h 30\nGarage Ford Steveny Soignies, chaussée de Mons 71, 7060 Soignies\n16 groupes, une volonté d’avancer ensemble !\nParticipation : 10 EUR par personne.\nInscription avec obligation de paiement, y compris en cas d’absence.\nInformations et inscription : https://event.bim-soignies.be/#inscription\nContact : event@bim-soignies.be\n")
+    message.add_alternative((Path(app.static_folder) / 'mailing-inter-bni.html').read_text(), subtype='html')
+    try:
+        send_notification(message)
+    except Exception as error:
+        with database() as db:
+            db.execute("UPDATE invitation_tests SET status='failed' WHERE request_id=?", (request_id,))
+        return jsonify(status='failed', error=type(error).__name__), 502
+    with database() as db:
+        db.execute("UPDATE invitation_tests SET status='accepted_by_smtp' WHERE request_id=?", (request_id,))
+    return jsonify(status='accepted_by_smtp', recipient=recipient, sender='hub@bim-soignies.be', messageId=str(message['Message-ID']))
