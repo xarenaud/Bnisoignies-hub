@@ -461,7 +461,7 @@ def invitation_test():
             return jsonify(status=existing['status'], recipient=recipient)
         db.execute('INSERT INTO invitation_tests VALUES(?,?,?)', (request_id, 'sending', datetime.now(ZoneInfo('Europe/Brussels')).isoformat()))
     message = EmailMessage()
-    message['Subject'] = '[TEST] Inter BNI — 26 novembre : 16 groupes, une volonté d’avancer ensemble !'
+    message['Subject'] = 'INTER BNI 26/11/2026 - Ford Steveny Soignies'
     message['From'] = 'hub@bim-soignies.be'
     message['To'] = recipient
     message['Reply-To'] = 'event@bim-soignies.be'
