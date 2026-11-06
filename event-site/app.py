@@ -159,6 +159,10 @@ def notification_worker():
         try:
             if deliver_pending():
                 continue
+            if globals().get("deliver_campaign") and deliver_campaign():
+                mail_wake.wait(2)
+                mail_wake.clear()
+                continue
         except Exception:
             app.logger.error('Event notification worker temporarily unavailable')
         mail_wake.wait(15)
@@ -479,3 +483,89 @@ def invitation_test():
     with database() as db:
         db.execute("UPDATE invitation_tests SET status='accepted_by_smtp' WHERE request_id=?", (request_id,))
     return jsonify(status='accepted_by_smtp', recipient=recipient, sender='hub@bim-soignies.be', messageId=str(message['Message-ID']))
+
+# Durable scheduled invitations. Recipients and approved HTML remain private in SQLite.
+def campaign_tables():
+    with database() as db:
+        db.executescript('''CREATE TABLE IF NOT EXISTS invitation_campaigns (
+          id TEXT PRIMARY KEY, due REAL NOT NULL, subject TEXT NOT NULL, html TEXT NOT NULL,
+          created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS invitation_campaign_recipients (
+          campaign_id TEXT NOT NULL, email TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+          claimed_at REAL, sent_at TEXT, error TEXT, PRIMARY KEY(campaign_id,email));''')
+
+
+campaign_tables()
+
+
+def campaign_summary(campaign_id):
+    with database() as db:
+        row = db.execute('SELECT id,due,subject FROM invitation_campaigns WHERE id=?', (campaign_id,)).fetchone()
+        if not row:
+            return None
+        counts = {r['status']: r['n'] for r in db.execute('SELECT status,COUNT(*) n FROM invitation_campaign_recipients WHERE campaign_id=? GROUP BY status', (campaign_id,))}
+    return dict(id=row['id'], scheduledFor=datetime.fromtimestamp(row['due'], ZoneInfo('Europe/Brussels')).isoformat(), subject=row['subject'], counts=counts, total=sum(counts.values()))
+
+
+@app.route('/api/admin/invitation-campaigns/<campaign_id>', methods=['GET', 'POST'])
+@admin_required
+def invitation_campaign(campaign_id):
+    if not re.fullmatch(r'[a-z0-9-]{12,80}', campaign_id):
+        return jsonify(error='Identifiant invalide.'), 422
+    if request.method == 'GET':
+        result = campaign_summary(campaign_id)
+        return (jsonify(result), 200) if result else (jsonify(error='Envoi introuvable.'), 404)
+    if not same_origin():
+        return jsonify(error='Origine non autorisée.'), 403
+    data = request.get_json(silent=True) or {}
+    recipients = data.get('recipients') if isinstance(data, dict) else None
+    if (not isinstance(recipients, list) or not 1 <= len(recipients) <= 1000 or
+        not all(isinstance(e, str) and len(e) <= 254 and re.fullmatch(r'[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+', e) for e in recipients)):
+        return jsonify(error='Destinataires invalides.'), 422
+    # One explicitly approved campaign, fixed date and subject, no immediate-send mode.
+    if campaign_id != 'inter-bni-20261109-0750':
+        return jsonify(error='Campagne non autorisée.'), 422
+    due = datetime(2026, 11, 9, 7, 50, tzinfo=ZoneInfo('Europe/Brussels')).timestamp()
+    recipients = list(dict.fromkeys(['xavier@cx-com.be'] + [e.lower() for e in recipients]))
+    html = (Path(app.static_folder) / 'mailing-inter-bni.html').read_text()
+    subject = 'INTER BNI 26/11/2026 - Ford Steveny Soignies'
+    with database() as db:
+        db.execute('BEGIN IMMEDIATE')
+        if not db.execute('SELECT 1 FROM invitation_campaigns WHERE id=?', (campaign_id,)).fetchone():
+            if due <= time.time():
+                return jsonify(error='La date programmée est passée.'), 422
+            db.execute('INSERT INTO invitation_campaigns VALUES(?,?,?,?,?)', (campaign_id, due, subject, html, datetime.now(ZoneInfo('Europe/Brussels')).isoformat()))
+            db.executemany('INSERT INTO invitation_campaign_recipients(campaign_id,email) VALUES(?,?)', [(campaign_id,e) for e in recipients])
+    return jsonify(campaign_summary(campaign_id))
+
+
+def deliver_campaign():
+    now = time.time()
+    with database() as db:
+        db.execute('BEGIN IMMEDIATE')
+        # Do not silently resend after ambiguous delivery or a process restart.
+        db.execute("UPDATE invitation_campaign_recipients SET status='unknown',error='DeliveryInterrupted' WHERE status='sending' AND claimed_at < ?", (now-300,))
+        row = db.execute("SELECT c.id,c.subject,c.html,r.email FROM invitation_campaigns c JOIN invitation_campaign_recipients r ON r.campaign_id=c.id WHERE c.due<=? AND r.status='pending' ORDER BY c.due,r.rowid LIMIT 1", (now,)).fetchone()
+        if not row:
+            return False
+        db.execute("UPDATE invitation_campaign_recipients SET status='sending',claimed_at=? WHERE campaign_id=? AND email=?", (now,row['id'],row['email']))
+    message = EmailMessage()
+    message['Subject'] = row['subject']
+    message['From'] = 'hub@bim-soignies.be'
+    message['To'] = row['email']
+    message['Reply-To'] = 'event@bim-soignies.be'
+    from email.utils import formatdate
+    message['Date'] = formatdate(localtime=False)
+    message['Message-ID'] = '<' + row['id'] + '.' + hashlib.sha256(row['email'].encode()).hexdigest()[:20] + '@event.bim-soignies.be>'
+    message.set_content('Inter BNI — jeudi 26 novembre 2026, de 7 h à 10 h 30. Garage Ford Steveny Soignies, chaussée de Mons 71, 7060 Soignies. Participation : 10 EUR par personne. Inscription avec obligation de paiement, y compris en cas d’absence. Informations et inscription : https://event.bim-soignies.be/#inscription\nContact et retrait des invitations : event@bim-soignies.be')
+    message.add_alternative(row['html'], subtype='html')
+    try:
+        send_notification(message)
+    except Exception as error:
+        status = 'failed' if isinstance(error, (smtplib.SMTPRecipientsRefused,smtplib.SMTPSenderRefused,smtplib.SMTPAuthenticationError)) else 'unknown'
+        with database() as db:
+            db.execute('UPDATE invitation_campaign_recipients SET status=?,error=? WHERE campaign_id=? AND email=?', (status,type(error).__name__,row['id'],row['email']))
+    else:
+        with database() as db:
+            db.execute("UPDATE invitation_campaign_recipients SET status='accepted_by_smtp',sent_at=? WHERE campaign_id=? AND email=?", (datetime.now(ZoneInfo('Europe/Brussels')).isoformat(),row['id'],row['email']))
+    return True
