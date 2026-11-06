@@ -326,7 +326,7 @@ def export():
         rows = db.execute('SELECT * FROM registrations WHERE is_test=0 ORDER BY id').fetchall()
     for row in rows:
         p = json.loads(row['payload'])
-        writer.writerow([cell(x) for x in [row['reference'], row['created_at'], p['firstName'], p['lastName'], p['group'], p.get('email', ''), p.get('phone', ''), 'Oui' if p.get('invoiceRequested') else 'Non', p.get('vatNumber', ''), row['count'], row['total'], ', '.join(g['firstName']+' '+g['lastName'] for g in p['guests']), p.get('paymentAcceptedAt', ''), p.get('paymentTerms', ''), 'À vérifier par virement']])
+        writer.writerow([cell(x) for x in [row['reference'], row['created_at'], p['firstName'], p['lastName'], p['group'], p.get('email', ''), p.get('phone', ''), 'Oui' if p.get('invoiceRequested') else 'Non', p.get('vatNumber', ''), row['count'], row['total'], ', '.join(g['firstName']+' '+g['lastName'] for g in p['guests']), p.get('paymentAcceptedAt', ''), p.get('paymentTerms', ''), expense_payment_label(row['reference'])]])
     return Response('\ufeff' + output.getvalue(), mimetype='text/csv; charset=utf-8', headers={'Content-Disposition': 'attachment; filename=BNI_Soignies_inscriptions.csv'})
 
 
@@ -385,7 +385,7 @@ def resend_organizer():
 # Organizer dashboard: live database on every request, refresh every 15 minutes.
 def organizer_rows():
     with database() as db:
-        return db.execute('SELECT * FROM registrations WHERE is_test=0 ORDER BY id DESC').fetchall()
+        return db.execute('SELECT r.*,n.paid_at AS payment_received_at,n.mail_status AS expense_mail_status FROM registrations r LEFT JOIN expense_notes n USING(reference) WHERE r.is_test=0 ORDER BY r.id DESC').fetchall()
 
 
 @app.get('/admin/inscriptions')
@@ -398,13 +398,15 @@ def organizer_dashboard():
         p = json.loads(row['payload'])
         guests = ', '.join(g['firstName'] + ' ' + g['lastName'] for g in p['guests']) or '—'
         values = [row['reference'], datetime.fromisoformat(row['created_at']).strftime('%d/%m/%Y %H:%M'), p['firstName'] + ' ' + p['lastName'], p['group'], p.get('email', ''), p.get('phone', ''), row['count'], str(row['total']) + ' €', guests, ('Oui — ' + p.get('vatNumber', '')) if p.get('invoiceRequested') else 'Non']
-        entries.append('<tr>' + ''.join('<td>' + escape(str(v)) + '</td>' for v in values) + '</tr>')
+        values.append('Payé le ' + row['payment_received_at'] if row['payment_received_at'] else 'À vérifier')
+        action_link = '<td><a href="/admin/inscriptions/' + row['reference'] + '/note">Paiement / note de frais</a></td>'
+        entries.append('<tr>' + ''.join('<td>' + escape(str(v)) + '</td>' for v in values) + action_link + '</tr>')
     updated = datetime.now(ZoneInfo('Europe/Brussels')).strftime('%d/%m/%Y à %H:%M:%S')
-    headers = ['Référence', 'Inscription', 'Personne qui paie', 'Groupe', 'Email', 'Téléphone', 'Places', 'Montant dû', 'Accompagnants', 'Facture / TVA']
+    headers = ['Référence', 'Inscription', 'Personne qui paie', 'Groupe', 'Email', 'Téléphone', 'Places', 'Montant dû', 'Accompagnants', 'Facture / TVA', 'Paiement', 'Actions']
     html = '''<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><meta http-equiv="refresh" content="900"><title>Inter BNI — Liste des inscrits</title><link rel="stylesheet" href="/admin/inscriptions.css"></head><body><main><p class="brand">BNI SOIGNIES · ESPACE ORGANISATEUR</p><h1>Liste des inscrits</h1><p>Inter BNI · 26 novembre 2026 · Ford Steveny Soignies</p>'''
-    html += '<section class="stats"><div><strong>' + str(len(rows)) + '</strong> inscriptions</div><div><strong>' + str(sum(r['count'] for r in rows)) + '</strong> places</div><div><strong>' + str(sum(r['total'] for r in rows)) + ' €</strong> à percevoir</div></section>'
+    html += '<section class="stats"><div><strong>' + str(len(rows)) + '</strong> inscriptions</div><div><strong>' + str(sum(r['count'] for r in rows)) + '</strong> places</div><div><strong>' + str(sum(r['total'] for r in rows if not r['payment_received_at'])) + ' €</strong> restant à percevoir</div></section>'
     html += '<p>Dernière actualisation : ' + updated + ' (heure belge). Actualisation automatique toutes les 15 minutes tant que cette page reste ouverte.</p><nav><a class="button" href="/admin/inscriptions.xlsx">Télécharger Excel (.xlsx)</a><a href="/admin/inscriptions">Actualiser maintenant</a><a href="/admin/inscriptions.csv">Télécharger CSV</a></nav><p class="note">Les montants indiquent les sommes dues. La réception des virements doit être vérifiée séparément. Les anciennes inscriptions conservent leur tarif initial.</p><div class="table"><table><thead><tr>'
-    html += ''.join('<th scope="col">' + h + '</th>' for h in headers) + '</tr></thead><tbody>' + (''.join(entries) or '<tr><td colspan="10">Aucune inscription pour le moment.</td></tr>') + '</tbody></table></div></main></body></html>'
+    html += ''.join('<th scope="col">' + h + '</th>' for h in headers) + '</tr></thead><tbody>' + (''.join(entries) or '<tr><td colspan="12">Aucune inscription pour le moment.</td></tr>') + '</tbody></table></div></main></body></html>'
     return Response(html, mimetype='text/html', headers={'X-Robots-Tag': 'noindex, nofollow'})
 
 
@@ -423,7 +425,7 @@ def organizer_excel():
     data = [['Référence', 'Date', 'Prénom payeur', 'Nom payeur', 'Groupe', 'Email', 'Téléphone', 'Places', 'Total EUR', 'Accompagnants', 'Facture / note de frais', 'TVA', 'Paiement', 'Engagement accepté le']]
     for row in rows:
         p = json.loads(row['payload'])
-        data.append([row['reference'], row['created_at'], p['firstName'], p['lastName'], p['group'], p.get('email', ''), p.get('phone', ''), row['count'], row['total'], ', '.join(g['firstName'] + ' ' + g['lastName'] for g in p['guests']), 'Oui' if p.get('invoiceRequested') else 'Non', p.get('vatNumber', ''), 'À vérifier par virement', p.get('paymentAcceptedAt', '')])
+        data.append([row['reference'], row['created_at'], p['firstName'], p['lastName'], p['group'], p.get('email', ''), p.get('phone', ''), row['count'], row['total'], ', '.join(g['firstName'] + ' ' + g['lastName'] for g in p['guests']), 'Oui' if p.get('invoiceRequested') else 'Non', p.get('vatNumber', ''), expense_payment_label(row['reference']), p.get('paymentAcceptedAt', '')])
     def xml_text(value):
         # Excel inline strings prevent formulas from user-provided text.
         return escape(re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', str(value)))
@@ -569,3 +571,12 @@ def deliver_campaign():
         with database() as db:
             db.execute("UPDATE invitation_campaign_recipients SET status='accepted_by_smtp',sent_at=? WHERE campaign_id=? AND email=?", (datetime.now(ZoneInfo('Europe/Brussels')).isoformat(),row['id'],row['email']))
     return True
+
+
+def expense_payment_label(ref):
+    with database() as db:
+        n = db.execute('SELECT paid_at FROM expense_notes WHERE reference=?',(ref,)).fetchone()
+    return 'Payé le ' + n['paid_at'] if n and n['paid_at'] else 'À vérifier par virement'
+
+from expense_notes import install as install_expense_notes
+expense_service = install_expense_notes(app, database, admin_required, same_origin, send_notification, ADMIN_PASSWORD, NOTIFICATIONS_ENABLED)
