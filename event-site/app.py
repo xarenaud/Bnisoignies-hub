@@ -171,6 +171,9 @@ def security_headers(response):
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
     response.headers['X-Frame-Options'] = 'DENY'
     response.headers['Content-Security-Policy'] = "default-src 'self'; img-src 'self'; style-src 'self'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+    if request.path == '/static/mailing-inter-bni.html':
+        # Presentation-only email preview: inline styles, no scripts or forms.
+        response.headers['Content-Security-Policy'] = "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
     if request.path.startswith(('/api', '/admin', '/register.php', '/event/register.php')):
         response.headers['Cache-Control'] = 'no-store'
     return response
