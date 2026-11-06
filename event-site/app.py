@@ -377,3 +377,65 @@ def resend_organizer():
         db.execute('INSERT INTO organizer_resends VALUES(?,?)', (request_id, json.dumps(result)))
     mail_wake.set()
     return jsonify(result)
+
+# Organizer dashboard: live database on every request, refresh every 15 minutes.
+def organizer_rows():
+    with database() as db:
+        return db.execute('SELECT * FROM registrations WHERE is_test=0 ORDER BY id DESC').fetchall()
+
+
+@app.get('/admin/inscriptions')
+@admin_required
+def organizer_dashboard():
+    from html import escape
+    rows = organizer_rows()
+    entries = []
+    for row in rows:
+        p = json.loads(row['payload'])
+        guests = ', '.join(g['firstName'] + ' ' + g['lastName'] for g in p['guests']) or '—'
+        values = [row['reference'], datetime.fromisoformat(row['created_at']).strftime('%d/%m/%Y %H:%M'), p['firstName'] + ' ' + p['lastName'], p['group'], p.get('email', ''), p.get('phone', ''), row['count'], str(row['total']) + ' €', guests, ('Oui — ' + p.get('vatNumber', '')) if p.get('invoiceRequested') else 'Non']
+        entries.append('<tr>' + ''.join('<td>' + escape(str(v)) + '</td>' for v in values) + '</tr>')
+    updated = datetime.now(ZoneInfo('Europe/Brussels')).strftime('%d/%m/%Y à %H:%M:%S')
+    headers = ['Référence', 'Inscription', 'Personne qui paie', 'Groupe', 'Email', 'Téléphone', 'Places', 'Montant dû', 'Accompagnants', 'Facture / TVA']
+    html = '''<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><meta http-equiv="refresh" content="900"><title>Inter BNI — Liste des inscrits</title><link rel="stylesheet" href="/admin/inscriptions.css"></head><body><main><p class="brand">BNI SOIGNIES · ESPACE ORGANISATEUR</p><h1>Liste des inscrits</h1><p>Inter BNI · 26 novembre 2026 · Ford Steveny Soignies</p>'''
+    html += '<section class="stats"><div><strong>' + str(len(rows)) + '</strong> inscriptions</div><div><strong>' + str(sum(r['count'] for r in rows)) + '</strong> places</div><div><strong>' + str(sum(r['total'] for r in rows)) + ' €</strong> à percevoir</div></section>'
+    html += '<p>Dernière actualisation : ' + updated + ' (heure belge). Actualisation automatique toutes les 15 minutes tant que cette page reste ouverte.</p><nav><a class="button" href="/admin/inscriptions.xlsx">Télécharger Excel (.xlsx)</a><a href="/admin/inscriptions">Actualiser maintenant</a><a href="/admin/inscriptions.csv">Télécharger CSV</a></nav><p class="note">Les montants indiquent les sommes dues. La réception des virements doit être vérifiée séparément. Les anciennes inscriptions conservent leur tarif initial.</p><div class="table"><table><thead><tr>'
+    html += ''.join('<th scope="col">' + h + '</th>' for h in headers) + '</tr></thead><tbody>' + (''.join(entries) or '<tr><td colspan="10">Aucune inscription pour le moment.</td></tr>') + '</tbody></table></div></main></body></html>'
+    return Response(html, mimetype='text/html', headers={'X-Robots-Tag': 'noindex, nofollow'})
+
+
+@app.get('/admin/inscriptions.css')
+@admin_required
+def organizer_css():
+    return Response('''*{box-sizing:border-box}body{margin:0;background:#101722;color:#e9edf3;font:15px/1.6 Arial,sans-serif}main{max-width:1600px;margin:auto;padding:40px 24px}.brand{color:#ff879b;font-weight:bold;letter-spacing:2px}h1{font-size:38px;margin:16px 0 8px}.stats{display:flex;flex-wrap:wrap;gap:16px;margin:28px 0}.stats div{background:#202b3b;border-top:3px solid #cf2030;padding:18px 26px;min-width:180px}.stats strong{display:block;font-size:32px}nav{display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin:24px 0}a{color:#ffadb9}.button{background:#cf2030;color:white;padding:12px 20px;text-decoration:none;font-weight:bold}.note{color:#bdc8d8;max-width:900px}.table{overflow-x:auto;background:#192332;border:1px solid #344154}table{border-collapse:collapse;width:100%;font-size:14px}th,td{text-align:left;padding:13px 16px;border-bottom:1px solid #344154;vertical-align:top}th{background:#263348;white-space:nowrap}td{overflow-wrap:anywhere;min-width:110px}tr:nth-child(even){background:#1e2b3e}@media(max-width:600px){main{padding:24px 14px}h1{font-size:30px}.stats div{flex:1;min-width:140px}}''', mimetype='text/css')
+
+
+@app.get('/admin/inscriptions.xlsx')
+@admin_required
+def organizer_excel():
+    import zipfile
+    from xml.sax.saxutils import escape
+    rows = organizer_rows()
+    data = [['Référence', 'Date', 'Prénom payeur', 'Nom payeur', 'Groupe', 'Email', 'Téléphone', 'Places', 'Total EUR', 'Accompagnants', 'Facture / note de frais', 'TVA', 'Paiement', 'Engagement accepté le']]
+    for row in rows:
+        p = json.loads(row['payload'])
+        data.append([row['reference'], row['created_at'], p['firstName'], p['lastName'], p['group'], p.get('email', ''), p.get('phone', ''), row['count'], row['total'], ', '.join(g['firstName'] + ' ' + g['lastName'] for g in p['guests']), 'Oui' if p.get('invoiceRequested') else 'Non', p.get('vatNumber', ''), 'À vérifier par virement', p.get('paymentAcceptedAt', '')])
+    def xml_text(value):
+        # Excel inline strings prevent formulas from user-provided text.
+        return escape(re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', str(value)))
+    sheet_rows = []
+    for n, values in enumerate(data, 1):
+        cells = []
+        for col, value in enumerate(values):
+            ref = chr(65 + col) + str(n)
+            cells.append(f'<c r="{ref}"><v>{value}</v></c>' if isinstance(value, int) else f'<c r="{ref}" t="inlineStr"><is><t xml:space="preserve">{xml_text(value)}</t></is></c>')
+        sheet_rows.append(f'<row r="{n}">' + ''.join(cells) + '</row>')
+    sheet = '<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols><col min="1" max="14" width="24" customWidth="1"/></cols><sheetData>' + ''.join(sheet_rows) + f'</sheetData><autoFilter ref="A1:N{len(data)}"/></worksheet>'
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as z:
+        z.writestr('[Content_Types].xml', '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>')
+        z.writestr('_rels/.rels', '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>')
+        z.writestr('xl/workbook.xml', '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Inscriptions" sheetId="1" r:id="rId1"/></sheets></workbook>')
+        z.writestr('xl/_rels/workbook.xml.rels', '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>')
+        z.writestr('xl/worksheets/sheet1.xml', sheet)
+    return Response(output.getvalue(), mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers={'Content-Disposition': 'attachment; filename=BNI_Soignies_inscriptions.xlsx'})
