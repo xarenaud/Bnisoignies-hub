@@ -29,6 +29,19 @@ jobs:
       - name: Check automatic updates
         run: node --test tests/updates.test.mjs
 
+      - name: Check environment interfaces
+        run: node --test tests/alumni-ui.test.cjs
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check environment isolation
+        run: |
+          pip install -r backend/requirements.txt
+          python -m unittest discover -s backend/tests -q
+
       - name: Build
         run: npm run build
 

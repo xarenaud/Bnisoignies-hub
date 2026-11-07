@@ -20,7 +20,7 @@ class MemberFrontTests(unittest.TestCase):
         hub.db.drop_all();hub.db.create_all()
         self.client=hub.app.test_client();self.ids={};self.headers={}
         for key,status in [('active','ACTIVE'),('off','OFF'),('former','FORMER'),('admin','ACTIVE')]:
-            m=hub.Member(first_name=key,last_name='Test',network_type='OFF' if key=='off' else 'OFFICIAL_BNI',network_access_enabled=False)
+            m=hub.Member(first_name=key,last_name='Test',network_type='OFF' if key=='off' else 'OFFICIAL_BNI',network_access_enabled=False,alumni_bridge_enabled=key in {'active','admin'})
             hub.db.session.add(m);hub.db.session.flush()
             a=hub.UserAccount(member_id=m.id,email=key+'@example.test',status='ACTIVE',is_system_admin=key=='admin')
             hub.db.session.add(a);hub.db.session.flush()
@@ -33,11 +33,11 @@ class MemberFrontTests(unittest.TestCase):
     def tearDown(self):
         hub.db.session.remove();self.ctx.pop()
 
-    def test_every_current_member_can_encode_without_flags(self):
+    def test_connected_members_can_encode_without_global_flags(self):
         for actor,partner in [('active','off'),('off','active'),('admin','off')]:
             headers=self.headers[actor]
             config=self.client.get('/api/network/config',headers=headers).get_json()
-            self.assertTrue(config['features']['VISITORS'])
+            self.assertTrue(config['features']['REFERRALS'])
             members=self.client.get('/api/network/members',headers=headers).get_json()
             self.assertIn(self.ids[partner],[m['id'] for m in members])
             self.assertNotIn(self.ids['former'],[m['id'] for m in members])
@@ -45,7 +45,7 @@ class MemberFrontTests(unittest.TestCase):
                 ('referrals',{'toMemberId':self.ids[partner],'contactName':'Contact test'}),
                 ('business',{'creditedMemberId':self.ids[partner],'amount':'150.50'}),
                 ('one-to-ones',{'partnerMemberId':self.ids[partner]}),
-                ('visitors',{'name':'Invité test'})]:
+]:
                 r=self.client.post('/api/network/'+path,headers=headers,json=payload)
                 self.assertEqual(r.status_code,201,(actor,path,r.get_json()))
                 self.assertEqual(self.client.get('/api/network/'+path,headers=headers).status_code,200)
@@ -99,7 +99,7 @@ class MemberFrontTests(unittest.TestCase):
         past=self.client.get(f'/api/me/past-stats?mandateId={old.id}&memberId={self.ids["off"]}',headers=self.headers['active']).get_json()
         self.assertEqual(past['stats']['businessGenerated'],30)
         self.assertEqual(past['stats']['memberId'],self.ids['active'])
-        group=self.client.get('/api/network/hub-summary',headers=self.headers['active']).get_json()
+        group=self.client.get('/api/network/hub-summary',headers=self.headers['admin']).get_json()
         self.assertEqual(group['businessTotal'],30)
         self.assertEqual(self.client.get('/api/me/past-stats').status_code,401)
         self.assertEqual(self.client.get('/api/me/past-stats?mandateId=9999',headers=self.headers['active']).status_code,404)

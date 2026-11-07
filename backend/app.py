@@ -23,6 +23,8 @@ class Member(db.Model):
     phone=db.Column(db.String(50))
     network_type=db.Column(db.String(30),nullable=False,default="OFFICIAL_BNI",index=True)
     network_access_enabled=db.Column(db.Boolean,nullable=False,default=False,index=True)
+    alumni_bridge_enabled=db.Column(db.Boolean,nullable=False,default=False)
+    alumni_requested_at=db.Column(db.DateTime)
     created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
 
 class UserAccount(db.Model):
@@ -345,6 +347,25 @@ class AttendanceRecord(db.Model):
     created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
     __table_args__=(db.UniqueConstraint("meeting_id","member_id",name="uq_attendance_meeting_member"),)
 
+class AlumniAvailability(db.Model):
+    __tablename__="alumni_availability"
+    id=db.Column(db.Integer,primary_key=True)
+    member_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    date=db.Column(db.Date,nullable=False,index=True)
+    note=db.Column(db.String(500))
+    active=db.Column(db.Boolean,nullable=False,default=True)
+    __table_args__=(db.UniqueConstraint("member_id","date"),)
+
+class AlumniSubstitution(db.Model):
+    __tablename__="alumni_substitutions"
+    id=db.Column(db.Integer,primary_key=True)
+    official_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    alumni_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    availability_id=db.Column(db.Integer,db.ForeignKey("alumni_availability.id"),nullable=False)
+    date=db.Column(db.Date,nullable=False,index=True)
+    status=db.Column(db.String(20),nullable=False,default="REQUESTED")
+    created_at=db.Column(db.DateTime,nullable=False,default=datetime.utcnow)
+
 class Meeting(db.Model):
     __tablename__="meetings"
     id=db.Column(db.Integer,primary_key=True)
@@ -415,30 +436,196 @@ def create_app():
             Member.network_type=="OFF"
         ).first() is not None
 
+    def official_member(member):
+        membership=active_membership_for(member.id)
+        return bool(membership and membership.status in {"ACTIVE","ONBOARDING"} and member.network_type!="OFF")
+
+    def alumni_member(member):
+        membership=active_membership_for(member.id)
+        return bool(membership and membership.status in {"ACTIVE","ONBOARDING","OFF"} and (membership.status=="OFF" or member.network_type=="OFF"))
+
     def network_bridge_enabled(account):
-        membership=active_membership_for(account.member_id)
-        return bool(
-            feature_enabled("NETWORK_MODULE")
-            and membership
-            and membership.status in {"ACTIVE","ONBOARDING","OFF"}
-            and has_off_members()
-        )
+        return bool(official_member(account.member) and account.member.alumni_bridge_enabled)
 
     def full_network_enabled(account):
-        # Core member interactions are available to every current member, including OFF.
-        membership=active_membership_for(account.member_id)
-        return bool(membership and membership.status in {"ACTIVE","ONBOARDING","OFF"})
+        return bool(alumni_member(account.member) or network_bridge_enabled(account))
 
     def require_feature(key):
         account,_=bearer_account()
         if not account:return None,({"error":"Authentification requise."},401)
+        if key in {"REFERRALS","BUSINESS","ONE_TO_ONE","ACTIVITY_SCORE"}:
+            if full_network_enabled(account):return account,None
+            return None,({"error":"La liaison avec les anciens est désactivée. Vous pouvez l'activer personnellement dans Profil."},403)
+        if key=="VISITORS":
+            if official_member(account.member):return account,None
+            return None,({"error":"Les invitations aux réunions relèvent de l'espace Membres."},403)
         if account.is_system_admin:return account,None
-        if key in {"REFERRALS","BUSINESS","ONE_TO_ONE","VISITORS","ACTIVITY_SCORE"} and full_network_enabled(account):return account,None
-        if not feature_enabled("NETWORK_MODULE"):return None,({"error":"Le module Réseau n'est pas activé."},403)
-        if not feature_enabled(key):return None,({"error":"Cette fonctionnalité Réseau n'est pas activée."},403)
-        if full_network_enabled(account):return account,None
-        if key in {"REFERRALS","BUSINESS","ONE_TO_ONE"} and network_bridge_enabled(account):return account,None
-        return None,({"error":"Le module Réseau complet n'est pas activé pour votre profil."},403)
+        if feature_enabled("NETWORK_MODULE") and feature_enabled(key) and full_network_enabled(account):return account,None
+        return None,({"error":"Fonctionnalité non disponible dans cet espace."},403)
+
+    @app.before_request
+    def enforce_environment():
+        if not request.path.startswith("/api/"):return None
+        account,_=bearer_account()
+        if not account or account.is_system_admin:return None
+        path=request.path
+        if path.startswith(("/api/network/contributors","/api/network/hub-summary","/api/network/leaderboard")):
+            if not account_payload(account)["isAdmin"]:return {"error":"Statistiques collectives réservées au comité."},403
+        official_paths=("/api/meetings","/api/planning","/api/duties","/api/duty-assignments","/api/swaps","/api/me/duty-assignments","/api/documents","/api/resources","/api/platforms","/api/vault","/api/handovers","/api/me/handovers","/api/onboarding","/api/mandates","/api/roles","/api/request-recipients","/api/me/request-inbox")
+        protected=path.startswith(official_paths) or (path.startswith("/api/member-requests") and not path.endswith("/attachment")) or (path=="/api/me/requests" and request.method!="GET")
+        if protected and not official_member(account.member):return {"error":"Cette fonction appartient à l'espace Membres. Les anciens accèdent aux réunions uniquement sur sollicitation de suppléance."},403
+
+    def personal_activity_period(member_id):
+        member=db.session.get(Member,member_id)
+        if not alumni_member(member):return active_mandate()
+        from types import SimpleNamespace
+        history=MemberNetworkHistory.query.filter_by(member_id=member_id,network_type="OFF").order_by(MemberNetworkHistory.start_date.desc()).first()
+        membership=active_membership_for(member_id)
+        today=date.today()
+        start=history.start_date if history else (membership.start_date or today)
+        return SimpleNamespace(id=None,name="Espace Anciens",start_date=start,end_date=today)
+
+    @app.get("/api/alumni-space/me")
+    def alumni_space_me():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        member=account.member
+        environment="ALUMNI" if alumni_member(member) else "MEMBERS" if official_member(member) else "INACTIVE"
+        return {"environment":environment,"bridgeEnabled":bool(official_member(member) and member.alumni_bridge_enabled),"requestedAt":member.alumni_requested_at.isoformat() if member.alumni_requested_at else None,"stats":member_statistics(member.id,personal_activity_period(member.id)) if alumni_member(member) else None}
+
+    @app.put("/api/me/alumni-bridge")
+    def my_alumni_bridge():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        if not official_member(account.member):return {"error":"La liaison est un choix personnel des membres actifs."},403
+        enabled=(request.get_json(silent=True) or {}).get("enabled")
+        if not isinstance(enabled,bool):return {"error":"Choisissez activer ou désactiver."},400
+        account.member.alumni_bridge_enabled=enabled
+        audit(account,"ALUMNI_BRIDGE_CHANGED","member",account.member_id,f"enabled={enabled}")
+        db.session.commit()
+        return {"member":account_payload(account),"bridgeEnabled":enabled}
+
+    @app.post("/api/me/alumni-request")
+    def request_alumni_transition():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        if alumni_member(account.member):return {"error":"Votre espace Anciens est déjà actif."},400
+        if not account.member.alumni_requested_at:
+            account.member.alumni_requested_at=datetime.utcnow()
+            for admin in UserAccount.query.filter_by(is_system_admin=True,status="ACTIVE").all():
+                notify(admin.member_id,"ALUMNI_REQUEST","Demande d'accès Anciens",member_name(account.member_id)+" demande son passage dans l'espace Anciens.","members")
+            audit(account,"ALUMNI_TRANSITION_REQUESTED","member",account.member_id)
+            db.session.commit()
+        return {"requested":True,"message":"Votre demande est enregistrée. L'administrateur validera le passage après votre départ."}
+
+    def release_future_welcome(member_id,today):
+        for assignment in DutyAssignment.query.join(Meeting,Meeting.id==DutyAssignment.meeting_id).filter(DutyAssignment.member_id==member_id,Meeting.date>=today,DutyAssignment.status.in_(["DRAFT","PUBLISHED"])).all():
+            assignment.status="TO_REASSIGN"
+            if not SwapRequest.query.filter_by(assignment_id=assignment.id,status="OPEN").first():db.session.add(SwapRequest(assignment_id=assignment.id,requester_id=member_id,status="OPEN"))
+
+    @app.post("/api/members/<int:member_id>/alumni-activate")
+    def activate_alumni_transition(member_id):
+        account,err=require_system_admin()
+        if err:return err
+        member=db.session.get(Member,member_id)
+        if not member:return {"error":"Membre introuvable."},404
+        if not member.alumni_requested_at:return {"error":"Une demande personnelle du membre est nécessaire."},400
+        if alumni_member(member):return member_payload(member)
+        today=date.today();previous=active_membership_for(member_id)
+        if previous:previous.status="FORMER";previous.end_date=today-timedelta(days=1)
+        db.session.add(Membership(member_id=member_id,status="OFF",start_date=today))
+        current=MemberNetworkHistory.query.filter_by(member_id=member_id,end_date=None).first()
+        if current:current.end_date=today-timedelta(days=1)
+        db.session.add(MemberNetworkHistory(member_id=member_id,network_type="OFF",start_date=today,changed_by_account_id=account.id))
+        member.network_type="OFF";member.network_access_enabled=True;member.alumni_bridge_enabled=False
+        release_future_welcome(member_id,today)
+        notify(member_id,"ALUMNI_ACTIVATED","Bienvenue dans l'espace Anciens","Votre historique est conservé. Votre accès à l'espace Membres est fermé.","home")
+        audit(account,"ALUMNI_TRANSITION_ACTIVATED","member",member_id)
+        db.session.commit()
+        return member_payload(member)
+
+    def availability_payload(x):
+        member=db.session.get(Member,x.member_id)
+        return {"id":x.id,"memberId":x.member_id,"member":member_name(x.member_id),"company":member.company,"date":x.date.isoformat(),"note":x.note,"active":x.active}
+
+    @app.route("/api/alumni-space/availability",methods=["GET","POST"])
+    def alumni_availability():
+        account,err=require_feature("REFERRALS")
+        if err:return err
+        if request.method=="POST":
+            if not alumni_member(account.member):return {"error":"Seuls les anciens proposent une suppléance."},403
+            data=request.get_json(silent=True) or {}
+            try:day=date.fromisoformat(data.get("date",""))
+            except (ValueError,TypeError):return {"error":"Date invalide."},400
+            if day<date.today():return {"error":"Choisissez une date à venir."},400
+            x=AlumniAvailability.query.filter_by(member_id=account.member_id,date=day).first()
+            if not x:x=AlumniAvailability(member_id=account.member_id,date=day);db.session.add(x)
+            x.active=True;x.note=str(data.get("note") or "")[:500]
+            db.session.commit();return availability_payload(x),201
+        rows=AlumniAvailability.query.filter(AlumniAvailability.date>=date.today(),AlumniAvailability.active==True).order_by(AlumniAvailability.date).all()
+        if alumni_member(account.member):rows=[x for x in rows if x.member_id==account.member_id]
+        else:rows=[x for x in rows if alumni_member(db.session.get(Member,x.member_id))]
+        rows=[x for x in rows if not AlumniSubstitution.query.filter_by(alumni_id=x.member_id,date=x.date,status="ACCEPTED").first()]
+        return jsonify([availability_payload(x) for x in rows])
+
+    @app.delete("/api/alumni-space/availability/<int:item_id>")
+    def remove_alumni_availability(item_id):
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        x=db.session.get(AlumniAvailability,item_id)
+        if not x or x.member_id!=account.member_id:return {"error":"Disponibilité introuvable."},404
+        x.active=False;db.session.commit();return {"ok":True}
+
+    def substitution_payload(x):
+        meeting=Meeting.query.filter_by(date=x.date).filter(Meeting.type!="NO_MEETING",Meeting.status!="CANCELLED").first()
+        return {"id":x.id,"officialId":x.official_id,"official":member_name(x.official_id),"alumniId":x.alumni_id,"alumni":member_name(x.alumni_id),"date":x.date.isoformat(),"status":x.status,"location":meeting.location if meeting else None,"startTime":meeting.start_time.strftime("%H:%M") if meeting and meeting.start_time else None}
+
+    @app.route("/api/alumni-space/substitutions",methods=["GET","POST"])
+    def alumni_substitutions():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        if request.method=="GET":
+            rows=AlumniSubstitution.query.filter(db.or_(AlumniSubstitution.official_id==account.member_id,AlumniSubstitution.alumni_id==account.member_id)).order_by(AlumniSubstitution.date.desc()).all()
+            return jsonify([substitution_payload(x) for x in rows])
+        if not official_member(account.member) or not account.member.alumni_bridge_enabled:return {"error":"Activez personnellement la liaison avec les anciens."},403
+        try:item_id=int((request.get_json(silent=True) or {}).get("availabilityId"))
+        except (ValueError,TypeError):return {"error":"Disponibilité invalide."},400
+        availability=AlumniAvailability.query.filter_by(id=item_id).with_for_update().first()
+        if not availability or not availability.active or availability.date<date.today():return {"error":"Cette disponibilité n'est plus proposée."},400
+        target=db.session.get(Member,availability.member_id)
+        if not alumni_member(target):return {"error":"Cet ancien n'est plus disponible."},400
+        meeting=Meeting.query.filter_by(date=availability.date).filter(Meeting.type!="NO_MEETING",Meeting.status!="CANCELLED").first()
+        if not meeting:return {"error":"Aucune réunion n'est programmée à cette date."},400
+        existing=AlumniSubstitution.query.filter_by(official_id=account.member_id,alumni_id=target.id,date=availability.date).filter(AlumniSubstitution.status.in_(["REQUESTED","ACCEPTED"])).first()
+        if existing:return substitution_payload(existing)
+        if AlumniSubstitution.query.filter_by(alumni_id=target.id,date=availability.date,status="ACCEPTED").first():return {"error":"Cet ancien est déjà engagé à cette date."},409
+        x=AlumniSubstitution(official_id=account.member_id,alumni_id=target.id,availability_id=availability.id,date=availability.date)
+        db.session.add(x);notify(target.id,"SUBSTITUTION_REQUEST","Demande de suppléance",member_name(account.member_id)+" vous sollicite pour le "+availability.date.isoformat(),"substitutions")
+        db.session.commit();return substitution_payload(x),201
+
+    @app.patch("/api/alumni-space/substitutions/<int:item_id>")
+    def respond_alumni_substitution(item_id):
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        x=db.session.get(AlumniSubstitution,item_id)
+        if not x or account.member_id not in {x.official_id,x.alumni_id}:return {"error":"Demande introuvable."},404
+        status=(request.get_json(silent=True) or {}).get("status")
+        if status=="CANCELLED" and account.member_id==x.official_id:
+            x.status=status
+        elif account.member_id==x.alumni_id and alumni_member(account.member) and status in {"ACCEPTED","DECLINED"}:
+            if x.status!="REQUESTED":return {"error":"Cette demande a déjà été traitée."},409
+            if x.date<date.today():return {"error":"Cette date est passée."},400
+            if status=="ACCEPTED":
+                official=db.session.get(Member,x.official_id)
+                if not official_member(official) or not official.alumni_bridge_enabled:return {"error":"La liaison de ce membre actif est désactivée."},403
+                AlumniAvailability.query.filter_by(id=x.availability_id).with_for_update().first()
+                if AlumniSubstitution.query.filter(AlumniSubstitution.alumni_id==x.alumni_id,AlumniSubstitution.date==x.date,AlumniSubstitution.status=="ACCEPTED",AlumniSubstitution.id!=x.id).first():return {"error":"Une autre suppléance est déjà acceptée pour cette date."},409
+            x.status=status
+        else:return {"error":"Action non autorisée."},403
+        other=x.official_id if account.member_id==x.alumni_id else x.alumni_id
+        notify(other,"SUBSTITUTION_RESPONSE","Suivi de suppléance",x.date.isoformat()+" : "+x.status,"substitutions")
+        audit(account,"ALUMNI_SUBSTITUTION_UPDATED","substitution",x.id,status);db.session.commit()
+        return substitution_payload(x)
 
     def member_name(member_id):
         m=db.session.get(Member,member_id)
@@ -447,7 +634,7 @@ def create_app():
     def member_payload(m):
         membership=Membership.query.filter_by(member_id=m.id).order_by(Membership.id.desc()).first()
         account=m.user_account
-        return {"id":m.id,"firstName":m.first_name,"lastName":m.last_name,"company":m.company,"activity":m.activity,"email":m.email,"phone":m.phone,"networkType":m.network_type or "OFFICIAL_BNI","networkAccessEnabled":bool(m.network_access_enabled),"status":membership.status if membership else None,"startDate":membership.start_date.isoformat() if membership and membership.start_date else None,"endDate":membership.end_date.isoformat() if membership and membership.end_date else None,"accountStatus":account.status if account else "NO_ACCOUNT","isSystemAdmin":bool(account and account.is_system_admin)}
+        return {"id":m.id,"firstName":m.first_name,"lastName":m.last_name,"company":m.company,"activity":m.activity,"email":m.email,"phone":m.phone,"networkType":m.network_type or "OFFICIAL_BNI","networkAccessEnabled":bool(m.network_access_enabled),"status":membership.status if membership else None,"startDate":membership.start_date.isoformat() if membership and membership.start_date else None,"endDate":membership.end_date.isoformat() if membership and membership.end_date else None,"alumniRequestedAt":m.alumni_requested_at.isoformat() if m.alumni_requested_at else None,"accountStatus":account.status if account else "NO_ACCOUNT","isSystemAdmin":bool(account and account.is_system_admin)}
 
     @app.route("/api/members",methods=["GET","POST"])
     def members():
@@ -531,6 +718,7 @@ def create_app():
         data=request.get_json(silent=True) or {}
         network_type=(data.get("networkType") or "").strip().upper()
         if network_type not in {"OFFICIAL_BNI","OFF","TRANSITION"}:return {"error":"Type de réseau invalide."},400
+        if network_type=="OFF" and official_member(member) and not member.alumni_requested_at:return {"error":"Le membre doit demander personnellement son passage chez les anciens."},400
         effective=date.today()
         if data.get("effectiveDate"):
             try:effective=date.fromisoformat(data["effectiveDate"])
@@ -549,6 +737,10 @@ def create_app():
                 previous.end_date=effective-timedelta(days=1)
             member.network_type=network_type
             if network_type=="OFF":
+                membership=active_membership_for(member.id)
+                if membership:membership.status="OFF"
+                member.alumni_bridge_enabled=False
+            if network_type=="OFF":
                 member.network_access_enabled=True
                 ensure_off_network_features()
             audit(account,"MEMBER_NETWORK_DATE_UPDATED","member",member.id,f"{network_type}; effective={effective.isoformat()}")
@@ -556,6 +748,10 @@ def create_app():
             return member_payload(member)
         if current:current.end_date=effective-timedelta(days=1)
         member.network_type=network_type
+        if network_type=="OFF":
+            membership=active_membership_for(member.id)
+            if membership:membership.status="OFF"
+            member.alumni_bridge_enabled=False
         if network_type=="OFF":
             member.network_access_enabled=True
             ensure_off_network_features()
@@ -577,8 +773,8 @@ def create_app():
     def network_config():
         account,_=bearer_account()
         if not account:return {"error":"Authentification requise."},401
-        rows={x.key:x for x in FeatureFlag.query.all()}
-        return {"features":{k:bool((full_network_enabled(account) and k in {"NETWORK_MODULE","REFERRALS","BUSINESS","ONE_TO_ONE","VISITORS","ACTIVITY_SCORE"}) or (rows.get(k) and rows[k].enabled)) for k in V2_FEATURES},"networkType":account.member.network_type or "OFFICIAL_BNI","networkAccessEnabled":bool(full_network_enabled(account)),"networkModuleEnabled":bool(full_network_enabled(account) or (rows.get("NETWORK_MODULE") and rows["NETWORK_MODULE"].enabled)),"networkBridgeEnabled":bool(network_bridge_enabled(account)),"fullNetworkEnabled":bool(account.is_system_admin or full_network_enabled(account)),"isSystemAdmin":bool(account.is_system_admin)}
+        enabled=full_network_enabled(account)
+        return {"features":{k:enabled for k in ["REFERRALS","BUSINESS","ONE_TO_ONE","ACTIVITY_SCORE"]},"networkType":account.member.network_type,"networkAccessEnabled":enabled,"networkModuleEnabled":enabled,"networkBridgeEnabled":network_bridge_enabled(account),"fullNetworkEnabled":enabled,"isSystemAdmin":False,"environment":"ALUMNI" if alumni_member(account.member) else "MEMBERS"}
 
     @app.get("/api/network/members")
     def network_members():
@@ -588,17 +784,17 @@ def create_app():
         out=[]
         for m in rows:
             membership=active_membership_for(m.id)
-            if not membership or membership.status not in {"ACTIVE","ONBOARDING","OFF"}:continue
+            if not bridge_pair_allowed(account,m.id) and m.id!=account.member_id:continue
             out.append({"id":m.id,"name":f"{m.first_name} {m.last_name}","company":m.company,"activity":m.activity,"networkType":m.network_type or "OFFICIAL_BNI"})
         return jsonify(out)
 
     def bridge_pair_allowed(account,other_member_id):
         other=db.session.get(Member,other_member_id)
-        if not other:return False
-        membership=active_membership_for(other_member_id)
-        if not membership or membership.status not in {"ACTIVE","ONBOARDING","OFF"}:return False
-        if account.is_system_admin or full_network_enabled(account):return True
-        return bool(network_bridge_enabled(account) and (account.member.network_type=="OFF" or other.network_type=="OFF"))
+        if not other or other.id==account.member_id:return False
+        own_alumni=alumni_member(account.member);other_alumni=alumni_member(other)
+        own_opted=official_member(account.member) and account.member.alumni_bridge_enabled
+        other_opted=official_member(other) and other.alumni_bridge_enabled
+        return bool((own_alumni and (other_alumni or other_opted)) or (own_opted and other_alumni))
 
     def referral_payload(x):
         return {"id":x.id,"fromMemberId":x.from_member_id,"fromMember":member_name(x.from_member_id),"toMemberId":x.to_member_id,"toMember":member_name(x.to_member_id),"contactName":x.contact_name,"company":x.company,"contactEmail":x.contact_email,"contactPhone":x.contact_phone,"notes":x.notes,"status":x.status,"estimatedValue":float(x.estimated_value) if x.estimated_value is not None else None,"closedAt":x.closed_at.isoformat() if x.closed_at else None,"businessAmount":float((BusinessThanks.query.filter_by(referral_id=x.id).first().amount)) if BusinessThanks.query.filter_by(referral_id=x.id).first() else None,"createdAt":x.created_at.isoformat(),"updatedAt":x.updated_at.isoformat() if x.updated_at else None}
@@ -613,7 +809,7 @@ def create_app():
             except (TypeError,ValueError):return {"error":"Membre destinataire requis."},400
             if to_id==account.member_id:return {"error":"Vous ne pouvez pas vous envoyer une recommandation à vous-même."},400
             if not db.session.get(Member,to_id):return {"error":"Membre destinataire introuvable."},404
-            if not bridge_pair_allowed(account,to_id):return {"error":"Votre accès Réseau permet uniquement les interactions avec les Membres OFF."},403
+            if not bridge_pair_allowed(account,to_id):return {"error":"Cette interaction nécessite un ancien et, pour un membre actif, sa liaison personnelle activée."},403
             contact=(data.get("contactName") or "").strip()
             if not contact:return {"error":"Le nom du contact recommandé est obligatoire."},400
             estimated=None
@@ -629,9 +825,7 @@ def create_app():
             referral_email(x)
             return referral_payload(x),201
         q=Referral.query
-        scope=request.args.get("scope","mine")
-        if scope!="all" or not account_payload(account)["isAdmin"]:
-            q=q.filter(db.or_(Referral.from_member_id==account.member_id,Referral.to_member_id==account.member_id))
+        q=q.filter(db.or_(Referral.from_member_id==account.member_id,Referral.to_member_id==account.member_id))
         rows=q.order_by(Referral.created_at.desc()).limit(500).all()
         if not account.is_system_admin and not full_network_enabled(account):
             rows=[x for x in rows if (db.session.get(Member,x.from_member_id).network_type=="OFF" or db.session.get(Member,x.to_member_id).network_type=="OFF")]
@@ -645,7 +839,7 @@ def create_app():
         if not x:return {"error":"Recommandation introuvable."},404
         if account.member_id!=x.to_member_id and not account_payload(account)["isAdmin"]:return {"error":"Le suivi doit être effectué par le membre qui a reçu la recommandation."},403
         other_id=x.from_member_id if account.member_id==x.to_member_id else x.to_member_id
-        if not bridge_pair_allowed(account,other_id):return {"error":"Votre accès Réseau permet uniquement les interactions avec les Membres OFF."},403
+        if not bridge_pair_allowed(account,other_id):return {"error":"Cette interaction nécessite un ancien et, pour un membre actif, sa liaison personnelle activée."},403
         data=request.get_json(silent=True) or {}
         status=(data.get("status") or "").strip().upper()
         if status not in REFERRAL_STATUSES:return {"error":"Statut invalide."},400
@@ -679,7 +873,7 @@ def create_app():
         if not x:return {"error":"Recommandation introuvable."},404
         if account.member_id not in {x.from_member_id,x.to_member_id} and not account_payload(account)["isAdmin"]:return {"error":"Accès refusé."},403
         other_id=x.from_member_id if account.member_id==x.to_member_id else x.to_member_id
-        if account.member_id in {x.from_member_id,x.to_member_id} and not bridge_pair_allowed(account,other_id):return {"error":"Votre accès Réseau permet uniquement les interactions avec les Membres OFF."},403
+        if account.member_id in {x.from_member_id,x.to_member_id} and not bridge_pair_allowed(account,other_id):return {"error":"Cette interaction nécessite un ancien et, pour un membre actif, sa liaison personnelle activée."},403
         rows=ReferralStatusHistory.query.filter_by(referral_id=x.id).order_by(ReferralStatusHistory.created_at.desc()).all()
         return jsonify([{"id":h.id,"status":h.status,"note":h.note,"changedBy":member_name(h.changed_by_member_id),"createdAt":h.created_at.isoformat()} for h in rows])
 
@@ -697,7 +891,7 @@ def create_app():
             if credited==account.member_id:return {"error":"Le Merci pour le Business doit créditer un autre membre."},400
             if amount<=0:return {"error":"Le montant doit être supérieur à 0."},400
             if not db.session.get(Member,credited):return {"error":"Membre introuvable."},404
-            if not bridge_pair_allowed(account,credited):return {"error":"Votre accès Réseau permet uniquement les interactions avec les Membres OFF."},403
+            if not bridge_pair_allowed(account,credited):return {"error":"Cette interaction nécessite un ancien et, pour un membre actif, sa liaison personnelle activée."},403
             business_date=date.today()
             if data.get("businessDate"):
                 try:business_date=date.fromisoformat(data["businessDate"])
@@ -714,8 +908,7 @@ def create_app():
             network_email(account.member_id,credited,"un MPB","business")
             return business_payload(x),201
         q=BusinessThanks.query
-        if request.args.get("scope")!="all" or not account_payload(account)["isAdmin"]:
-            q=q.filter(db.or_(BusinessThanks.from_member_id==account.member_id,BusinessThanks.credited_member_id==account.member_id))
+        q=q.filter(db.or_(BusinessThanks.from_member_id==account.member_id,BusinessThanks.credited_member_id==account.member_id))
         return jsonify([business_payload(x) for x in q.order_by(BusinessThanks.business_date.desc(),BusinessThanks.id.desc()).limit(500).all()])
 
     @app.route("/api/network/one-to-ones",methods=["GET","POST"])
@@ -728,7 +921,7 @@ def create_app():
             except (TypeError,ValueError):return {"error":"Membre partenaire requis."},400
             if partner==account.member_id:return {"error":"Choisissez un autre membre."},400
             if not db.session.get(Member,partner):return {"error":"Membre introuvable."},404
-            if not bridge_pair_allowed(account,partner):return {"error":"Votre accès Réseau permet uniquement les interactions avec les Membres OFF."},403
+            if not bridge_pair_allowed(account,partner):return {"error":"Cette interaction nécessite un ancien et, pour un membre actif, sa liaison personnelle activée."},403
             d=date.today()
             if data.get("meetingDate"):
                 try:d=date.fromisoformat(data["meetingDate"])
@@ -745,8 +938,7 @@ def create_app():
             network_email(account.member_id,partner,"un TAT","oto")
             return {"id":x.id,"partner":member_name(partner),"meetingDate":d.isoformat(),"durationMinutes":duration,"notes":x.notes},201
         q=OneToOne.query
-        if request.args.get("scope")!="all" or not account_payload(account)["isAdmin"]:
-            q=q.filter(db.or_(OneToOne.member_a_id==account.member_id,OneToOne.member_b_id==account.member_id))
+        q=q.filter(db.or_(OneToOne.member_a_id==account.member_id,OneToOne.member_b_id==account.member_id))
         rows=q.order_by(OneToOne.meeting_date.desc(),OneToOne.id.desc()).limit(500).all()
         return jsonify([{"id":x.id,"memberAId":x.member_a_id,"memberA":member_name(x.member_a_id),"memberBId":x.member_b_id,"memberB":member_name(x.member_b_id),"meetingDate":x.meeting_date.isoformat(),"durationMinutes":x.duration_minutes,"notes":x.notes} for x in rows])
 
@@ -766,7 +958,7 @@ def create_app():
             db.session.add(x);db.session.flush();audit(account,"VISITOR_CREATED","network_visitor",x.id,name);db.session.commit()
             return {"id":x.id,"name":x.name,"company":x.company,"activity":x.activity,"visitDate":x.visit_date.isoformat(),"status":x.status},201
         q=NetworkVisitor.query
-        if request.args.get("scope")!="all" or not account_payload(account)["isAdmin"]:q=q.filter_by(invited_by_member_id=account.member_id)
+        q=q.filter_by(invited_by_member_id=account.member_id)
         rows=q.order_by(NetworkVisitor.visit_date.desc(),NetworkVisitor.id.desc()).limit(500).all()
         return jsonify([{"id":x.id,"invitedByMemberId":x.invited_by_member_id,"invitedBy":member_name(x.invited_by_member_id),"name":x.name,"company":x.company,"activity":x.activity,"email":x.email,"phone":x.phone,"visitDate":x.visit_date.isoformat(),"status":x.status,"notes":x.notes} for x in rows])
 
@@ -803,7 +995,7 @@ def create_app():
         if request.args.get("memberId") and account_payload(account)["isAdmin"]:
             try:member_id=int(request.args["memberId"])
             except ValueError:return {"error":"Membre invalide."},400
-        return member_statistics(member_id,active_mandate())
+        return member_statistics(member_id,personal_activity_period(member_id))
 
     def member_statistics(member_id,mandate):
         today=datetime.now(ZoneInfo("Europe/Brussels")).date()
@@ -904,8 +1096,9 @@ def create_app():
 
     @app.get("/api/me/home")
     def member_home():
-        account,err=require_feature("ACTIVITY_SCORE")
-        if err:return err
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        if not official_member(account.member):return {"error":"Accueil réservé à l'espace Membres."},403
         today=datetime.now(ZoneInfo("Europe/Brussels")).date()
         meetings=Meeting.query.filter(Meeting.date>=today,Meeting.type!="NO_MEETING",Meeting.status!="CANCELLED").order_by(Meeting.date,Meeting.start_time).all()
         # On the day itself, move on once the meeting start time has passed.
@@ -917,10 +1110,10 @@ def create_app():
             guests=NetworkVisitor.query.filter(NetworkVisitor.visit_date==meeting.date,NetworkVisitor.status!="DECLINED").all()
             legacy=MemberRequest.query.filter_by(type="INVITATION",event_date=meeting.date).all()
             names={g.name.strip().casefold() for g in guests}
-            next_payload={**meeting_payload(meeting),"assignments":[assignment_payload(a) for a in assignments],
+            next_payload={**meeting_payload(meeting),"assignments":[assignment_payload(a) for a in assignments if official_member(db.session.get(Member,a.member_id))],
                 "guests":[{"id":f"visitor-{g.id}","name":g.name,"company":g.company,"invitedBy":member_name(g.invited_by_member_id)} for g in guests]+
                     [{"id":f"request-{g.id}","name":g.guest_name,"company":None,"invitedBy":member_name(g.member_id)} for g in legacy if g.guest_name and g.guest_name.strip().casefold() not in names]}
-        return {"memberStats":network_stats(),"groupStats":network_hub_summary(),"nextMeeting":next_payload}
+        return {"memberStats":None,"groupStats":None,"nextMeeting":next_payload}
 
     @app.get("/api/network/leaderboard")
     def network_leaderboard():
@@ -1052,8 +1245,9 @@ def create_app():
         if data.get("endsAt"):
             try:end=date.fromisoformat(data["endsAt"])
             except ValueError:return {"error":"Date de fin invalide."},400
-        x.status="ACTIVE";x.starts_at=start;x.ends_at=end
         member=db.session.get(Member,x.member_id)
+        if official_member(member) and not member.alumni_requested_at:return {"error":"Le membre doit demander personnellement son passage chez les anciens."},400
+        x.status="ACTIVE";x.starts_at=start;x.ends_at=end
         member.network_type="OFF";member.network_access_enabled=True
         ensure_off_network_features()
         membership=Membership.query.filter_by(member_id=member.id).order_by(Membership.id.desc()).first()
@@ -1124,6 +1318,7 @@ def create_app():
         if "status" in data:
             new_status=(data["status"] or "").strip().upper()
             if new_status not in {"ACTIVE","ONBOARDING","FORMER","OFF"}:return {"error":"Statut membre invalide."},400
+            if new_status=="OFF" and official_member(member) and not member.alumni_requested_at:return {"error":"Le membre doit demander personnellement son passage chez les anciens."},400
             membership.status=new_status
             if new_status=="OFF":
                 member.network_access_enabled=True
@@ -1258,13 +1453,15 @@ def create_app():
         host=os.getenv("SMTP_HOST","").strip();sender=os.getenv("SMTP_FROM","").strip()
         if host and sender:
             msg=EmailMessage()
-            msg["Subject"]="HUB Soignies — votre invitation"
+            space="HUB Anciens" if alumni_member(member) else "HUB Soignies"
+            invitation_text="Gardez le contact avec les anciens et échangez recommandations, MPB et TAT. Les échanges avec les membres actifs sont limités à ceux qui ont activé leur liaison personnelle." if alumni_member(member) else "Retrouvez les informations et la vie du groupe dans votre espace Membres."
+            msg["Subject"]=space+" — votre invitation"
             msg["From"]=sender;msg["To"]=member.email
             msg.set_content(f"""Bonjour {member.first_name},
 
-Vous êtes invité(e) à découvrir HUB Soignies.
+Vous êtes invité(e) à découvrir {space}.
 
-Xavier vous propose de tester l'application et de lui remonter vos remarques, idées ou éventuels problèmes rencontrés.
+{invitation_text}
 
 Activez votre accès avec ce lien (valable 48 heures) :
 {activation_url}
@@ -1362,12 +1559,12 @@ Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet e-mai
         active_mandates=Mandate.query.filter(Mandate.start_date<=today,Mandate.end_date>=today).all()
         mandate_ids=[m.id for m in active_mandates]
         roles=[]
-        if mandate_ids:
+        if mandate_ids and official_member(account.member):
             assignments=RoleAssignment.query.filter(RoleAssignment.member_id==account.member_id,RoleAssignment.mandate_id.in_(mandate_ids),RoleAssignment.status=="ACTIVE").all()
             role_ids=[a.role_id for a in assignments]
             if role_ids: roles=[r.name for r in Role.query.filter(Role.id.in_(role_ids)).all()]
         admin=bool(account.is_system_admin or any(r.lower().strip() in {"président","president","vice-président","vice president","vice-president","secrétaire trésorier","secretaire tresorier","secrétaire-trésorier","secretaire-tresorier","trésorier","tresorier"} for r in roles))
-        return {"id":account.member.id,"firstName":account.member.first_name,"lastName":account.member.last_name,"email":account.email,"roles":roles,"isAdmin":admin,"isSystemAdmin":bool(account.is_system_admin),"networkType":account.member.network_type or "OFFICIAL_BNI","networkAccessEnabled":bool(full_network_enabled(account)),"networkModuleEnabled":bool(full_network_enabled(account) or feature_enabled("NETWORK_MODULE")),"networkBridgeEnabled":bool(network_bridge_enabled(account))}
+        return {"id":account.member.id,"firstName":account.member.first_name,"lastName":account.member.last_name,"email":account.email,"roles":roles,"isAdmin":admin,"isSystemAdmin":bool(account.is_system_admin),"networkType":account.member.network_type or "OFFICIAL_BNI","networkAccessEnabled":bool(full_network_enabled(account)),"networkModuleEnabled":bool(full_network_enabled(account)),"networkBridgeEnabled":bool(network_bridge_enabled(account)),"alumniBridgeEnabled":bool(account.member.alumni_bridge_enabled),"environment":"ALUMNI" if alumni_member(account.member) else "MEMBERS" if official_member(account.member) else "INACTIVE"}
 
     def bearer_account():
         header=request.headers.get("Authorization","")
@@ -1380,6 +1577,7 @@ Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet e-mai
             if session:
                 db.session.delete(session);db.session.commit()
             return None,None
+        if session.account.status!="ACTIVE":return None,None
         return session.account,session
 
     @app.post("/api/auth/login")
@@ -1980,7 +2178,7 @@ Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet e-mai
         if configured:
             mids=list(dict.fromkeys([x.member_id for x in configured]))
             members={m.id:m for m in Member.query.filter(Member.id.in_(mids)).all()}
-            return [{"memberId":mid,"member":f"{members[mid].first_name} {members[mid].last_name}","email":members[mid].email,"role":"Destinataire configuré"} for mid in mids if mid in members]
+            return [{"memberId":mid,"member":f"{members[mid].first_name} {members[mid].last_name}","email":members[mid].email,"role":"Destinataire configuré"} for mid in mids if mid in members and official_member(members[mid])]
         when=when or date.today()
         mandates=Mandate.query.filter(Mandate.start_date<=when,Mandate.end_date>=when).all()
         if not mandates:return []
@@ -1991,10 +2189,11 @@ Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet e-mai
         rows=RoleAssignment.query.filter(RoleAssignment.mandate_id.in_([m.id for m in mandates]),RoleAssignment.role_id.in_(role_ids),RoleAssignment.status=="ACTIVE").all()
         members={m.id:m for m in Member.query.filter(Member.id.in_(list({a.member_id for a in rows}))).all()} if rows else {}
         rolemap={r.id:r.name for r in roles}
-        return [{"memberId":a.member_id,"member":f"{members[a.member_id].first_name} {members[a.member_id].last_name}","email":members[a.member_id].email,"role":rolemap.get(a.role_id,"—")} for a in rows if a.member_id in members]
+        return [{"memberId":a.member_id,"member":f"{members[a.member_id].first_name} {members[a.member_id].last_name}","email":members[a.member_id].email,"role":rolemap.get(a.role_id,"—")} for a in rows if a.member_id in members and official_member(members[a.member_id])]
 
     def can_manage_request(account,kind):
         if account.is_system_admin:return True
+        if not official_member(account.member):return False
         return any(x["memberId"]==account.member_id for x in request_assignees(kind))
 
     def member_request_payload(x):
@@ -2246,7 +2445,7 @@ Cette demande est également disponible dans HUB Soignies.""")
         meeting=db.session.get(Meeting,a.meeting_id);duty=db.session.get(Duty,a.duty_id)
         for m in Member.query.all():
             ms=Membership.query.filter_by(member_id=m.id).order_by(Membership.id.desc()).first()
-            if m.id!=account.member_id and ms and ms.status=="ACTIVE" and (not ms.start_date or ms.start_date<=meeting.date) and (not ms.end_date or ms.end_date>=meeting.date):
+            if official_member(m) and m.id!=account.member_id and ms and ms.status=="ACTIVE" and (not ms.start_date or ms.start_date<=meeting.date) and (not ms.end_date or ms.end_date>=meeting.date):
                 notify(m.id,"DUTY_REPLACEMENT","Remplacement recherché",f"{account.member.first_name} {account.member.last_name} cherche un remplacement pour {duty.name} le {meeting.date.strftime('%d/%m/%Y')}.","duties")
         db.session.commit()
         return {"status":"TO_REASSIGN","message":"Indisponibilité enregistrée. Les autres membres peuvent proposer de reprendre cette permanence."}
@@ -2295,7 +2494,7 @@ Cette demande est également disponible dans HUB Soignies.""")
 
     def swap_payload(x):
         a=db.session.get(DutyAssignment,x.assignment_id);meeting=db.session.get(Meeting,a.meeting_id) if a else None;duty=db.session.get(Duty,a.duty_id) if a else None;requester=db.session.get(Member,x.requester_id);volunteer=db.session.get(Member,x.volunteer_id) if x.volunteer_id else None
-        return {"id":x.id,"assignmentId":x.assignment_id,"date":meeting.date.isoformat() if meeting else None,"duty":duty.name if duty else "—","requester":f"{requester.first_name} {requester.last_name}" if requester else "—","volunteer":f"{volunteer.first_name} {volunteer.last_name}" if volunteer else None,"status":x.status}
+        return {"id":x.id,"assignmentId":x.assignment_id,"date":meeting.date.isoformat() if meeting else None,"duty":duty.name if duty else "—","requester":f"{requester.first_name} {requester.last_name}" if requester and official_member(requester) else "Poste à réattribuer","volunteer":f"{volunteer.first_name} {volunteer.last_name}" if volunteer else None,"status":x.status}
 
     @app.get("/api/swaps/open")
     def open_swaps():
@@ -2356,7 +2555,7 @@ Cette demande est également disponible dans HUB Soignies.""")
         candidates=[]
         for m in Member.query.order_by(Member.last_name,Member.first_name).all():
             ms=Membership.query.filter_by(member_id=m.id).order_by(Membership.id.desc()).first()
-            if ms and ms.status=="ACTIVE" and m.id not in occupied and (not ms.start_date or ms.start_date<=meeting.date) and (not ms.end_date or ms.end_date>=meeting.date):candidates.append(m)
+            if official_member(m) and ms and ms.status=="ACTIVE" and m.id not in occupied and (not ms.start_date or ms.start_date<=meeting.date) and (not ms.end_date or ms.end_date>=meeting.date):candidates.append(m)
         if not candidates:return {"error":"Aucun membre disponible."},400
         def score(m):
             total=DutyAssignment.query.filter_by(member_id=m.id).count()
@@ -2377,6 +2576,7 @@ Cette demande est également disponible dans HUB Soignies.""")
         rows=DutyAssignment.query.join(Meeting,DutyAssignment.meeting_id==Meeting.id).filter(DutyAssignment.status.in_(["PUBLISHED","TO_REASSIGN"])).order_by(Meeting.date,DutyAssignment.duty_id).all()
         grouped={}
         for a in rows:
+            if not official_member(db.session.get(Member,a.member_id)):continue
             p=assignment_payload(a);key=p["date"]
             grouped.setdefault(key,{"date":key,"assignments":[]})["assignments"].append(p)
         return jsonify(list(grouped.values()))
@@ -2394,7 +2594,7 @@ Cette demande est également disponible dans HUB Soignies.""")
         active_members=[]
         for m in Member.query.order_by(Member.last_name,Member.first_name).all():
             ms=Membership.query.filter_by(member_id=m.id).order_by(Membership.id.desc()).first()
-            if ms and ms.status=="ACTIVE" and (not ms.end_date or ms.end_date>=start):active_members.append(m)
+            if official_member(m) and ms and ms.status=="ACTIVE" and (not ms.end_date or ms.end_date>=start):active_members.append(m)
         if len(active_members)<len(duties):return {"error":"Pas assez de membres actifs pour générer la rotation."},400
         existing=DutyAssignment.query.join(Meeting,DutyAssignment.meeting_id==Meeting.id).filter(Meeting.date>=start,Meeting.date<=end).all()
         total={m.id:0 for m in active_members};per={(m.id,d.id):0 for m in active_members for d in duties};last={m.id:date.min for m in active_members}
@@ -2493,6 +2693,10 @@ Cette demande est également disponible dans HUB Soignies.""")
 
     with app.app_context():
         db.create_all()
+        if db.engine.dialect.name=="postgresql":
+            db.session.execute(text("ALTER TABLE members ADD COLUMN IF NOT EXISTS alumni_bridge_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
+            db.session.execute(text("ALTER TABLE members ADD COLUMN IF NOT EXISTS alumni_requested_at TIMESTAMP"))
+            db.session.commit()
         # Temporary lightweight migration until Alembic is introduced.
         if db.engine.dialect.name=="postgresql":db.session.execute(text("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS is_system_admin BOOLEAN NOT NULL DEFAULT FALSE"))
         if db.engine.dialect.name=="postgresql":db.session.execute(text("ALTER TABLE members ADD COLUMN IF NOT EXISTS network_type VARCHAR(30) NOT NULL DEFAULT 'OFFICIAL_BNI'"))
@@ -2504,6 +2708,11 @@ Cette demande est également disponible dans HUB Soignies.""")
         if db.engine.dialect.name=="postgresql":db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_name VARCHAR(255)"))
         if db.engine.dialect.name=="postgresql":db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_type VARCHAR(120)"))
         if db.engine.dialect.name=="postgresql":db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_data BYTEA"))
+        db.session.commit()
+        # Existing admitted OFF members move into the isolated alumni space too.
+        # Release only future duties; historical attendance and activity stay intact.
+        for member in Member.query.all():
+            if alumni_member(member):release_future_welcome(member.id,date.today())
         db.session.commit()
         enabled_by_default={"REFERRALS","BUSINESS","ONE_TO_ONE","VISITORS","ATTENDANCE","ACTIVITY_SCORE"}
         for key,(label,desc) in V2_FEATURES.items():
