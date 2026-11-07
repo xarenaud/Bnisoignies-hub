@@ -267,6 +267,8 @@ class MemberRequest(db.Model):
     guest_name=db.Column(db.String(255))
     guest_email=db.Column(db.String(255))
     event_date=db.Column(db.Date)
+    event_time=db.Column(db.String(5))
+    event_location=db.Column(db.String(255))
     attachment_name=db.Column(db.String(255))
     attachment_type=db.Column(db.String(120))
     attachment_data=db.Column(db.LargeBinary)
@@ -496,7 +498,11 @@ def create_app():
         if path.startswith(("/api/network/contributors","/api/network/hub-summary","/api/network/leaderboard")):
             if not account_payload(account)["isAdmin"]:return {"error":"Statistiques collectives réservées au comité."},403
         official_paths=("/api/meetings","/api/planning","/api/duties","/api/duty-assignments","/api/swaps","/api/me/duty-assignments","/api/documents","/api/resources","/api/platforms","/api/vault","/api/handovers","/api/me/handovers","/api/onboarding","/api/mandates","/api/roles","/api/request-recipients","/api/me/request-inbox")
-        protected=path.startswith(official_paths) or (path.startswith("/api/member-requests") and not path.endswith("/attachment")) or (path=="/api/me/requests" and request.method!="GET")
+        event_submission=False
+        if path=="/api/me/requests" and request.method=="POST":
+            data=request.form if request.content_type and request.content_type.startswith("multipart/form-data") else (request.get_json(silent=True) or {})
+            event_submission=alumni_member(account.member) and str(data.get("type","")).strip().upper()=="EVENT"
+        protected=path.startswith(official_paths) or (path.startswith("/api/member-requests") and not path.endswith("/attachment")) or (path=="/api/me/requests" and request.method!="GET" and not event_submission)
         if protected and not official_member(account.member):return {"error":"Cette fonction appartient à l'espace Membres. Les anciens accèdent aux réunions uniquement sur sollicitation de suppléance."},403
 
     def personal_activity_period(member_id):
@@ -2582,11 +2588,16 @@ Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet e-mai
 
     def member_request_payload(x):
         m=db.session.get(Member,x.member_id);assignees=request_assignees(x.type,x.created_at.date() if x.created_at else None)
-        return {"id":x.id,"type":x.type,"title":x.title,"message":x.message,"guestName":x.guest_name,"guestEmail":x.guest_email,"eventDate":x.event_date.isoformat() if x.event_date else None,"status":x.status,"createdAt":x.created_at.isoformat(),"member":f"{m.first_name} {m.last_name}" if m else "—","assignees":[{k:v for k,v in t.items() if k!="email"} for t in assignees],"routingStatus":"ROUTED" if assignees else "UNASSIGNED","attachmentName":x.attachment_name,"hasAttachment":bool(x.attachment_data)}
+        return {"id":x.id,"type":x.type,"title":x.title,"message":x.message,"guestName":x.guest_name,"guestEmail":x.guest_email,"eventDate":x.event_date.isoformat() if x.event_date else None,"eventTime":x.event_time,"eventLocation":x.event_location,"status":x.status,"createdAt":x.created_at.isoformat(),"member":f"{m.first_name} {m.last_name}" if m else "—","assignees":[{k:v for k,v in t.items() if k!="email"} for t in assignees],"routingStatus":"ROUTED" if assignees else "UNASSIGNED","attachmentName":x.attachment_name,"hasAttachment":bool(x.attachment_data)}
 
     def notify(member_id,kind,title,message=None,link=None):
         n=Notification(member_id=member_id,type=kind,title=title,message=message,link=link)
         db.session.add(n);return n
+
+    def notify_agenda_members(actor_id,title,message,event_date):
+        for member in Member.query.join(UserAccount).filter(UserAccount.status=="ACTIVE").all():
+            if member.id!=actor_id and (official_member(member) or alumni_member(member)):
+                notify(member.id,"SHARED_EVENT",title,message,"agenda:"+event_date.strftime("%Y-%m"))
 
     def notification_payload(n):
         return {"id":n.id,"type":n.type,"title":n.title,"message":n.message,"link":n.link,"read":bool(n.read_at),"createdAt":n.created_at.isoformat()}
@@ -2713,6 +2724,15 @@ Cette demande est également disponible dans HUB Soignies.""")
         if data.get("eventDate"):
             try:event_date=date.fromisoformat(data["eventDate"])
             except ValueError:return {"error":"Date invalide."},400
+        event_time=(data.get("eventTime") or "").strip() or None
+        event_location=(data.get("eventLocation") or "").strip() or None
+        if kind=="EVENT":
+            if not event_date:return {"error":"La date de l'événement est obligatoire pour le publier dans l'agenda."},400
+            if not str(data.get("title") or "").strip():return {"error":"Le titre de l'événement est obligatoire."},400
+            if event_time:
+                try:event_time=datetime.strptime(event_time,"%H:%M").strftime("%H:%M")
+                except ValueError:return {"error":"Heure invalide."},400
+            if event_location and len(event_location)>255:return {"error":"Le lieu ne peut pas dépasser 255 caractères."},400
         upload=request.files.get("attachment")
         attachment_name=attachment_type=None;attachment_data=None
         if upload and upload.filename:
@@ -2723,11 +2743,14 @@ Cette demande est également disponible dans HUB Soignies.""")
             if len(attachment_data)>REQUEST_MAX_FILE_SIZE:return {"error":"La pièce jointe dépasse 5 Mo."},413
             attachment_type=upload.mimetype or "application/octet-stream"
         x=MemberRequest(member_id=account.member_id,type=kind,title=(data.get("title") or "").strip() or None,message=(data.get("message") or "").strip() or None,guest_name=(data.get("guestName") or "").strip() or None,guest_email=(data.get("guestEmail") or "").strip() or None,event_date=event_date,attachment_name=attachment_name,attachment_type=attachment_type,attachment_data=attachment_data,status="TO_PROCESS")
+        if kind=="EVENT":x.event_time=event_time;x.event_location=event_location
         db.session.add(x);db.session.flush()
         targets=request_assignees(kind)
         for target in targets:
             if target["memberId"]!=account.member_id:notify(target["memberId"],"NEW_REQUEST",f"Nouvelle demande : {kind.title()}",f"{account.member.first_name} {account.member.last_name} a envoyé une nouvelle demande.","requests")
         audit(account,"MEMBER_REQUEST_CREATED","member_request",x.id,f"type={kind}; attachment={attachment_name or 'none'}")
+        if kind=="EVENT":
+            notify_agenda_members(account.member_id,"Nouvel événement dans l’agenda",f"{account.member.first_name} {account.member.last_name} partage {x.title} le {event_date.strftime('%d/%m/%Y')}.",event_date)
         db.session.commit()
         email_sent=False
         try:email_sent=send_request_email(x,account,targets)
@@ -2742,7 +2765,8 @@ Cette demande est également disponible dans HUB Soignies.""")
         if not account:return {"error":"Authentification requise."},401
         x=db.session.get(MemberRequest,request_id)
         if not x or not x.attachment_data:return {"error":"Pièce jointe introuvable."},404
-        if not (account.is_system_admin or account.member_id==x.member_id or can_manage_request(account,x.type)):return {"error":"Accès refusé."},403
+        shared_event=x.type=="EVENT" and x.event_date and (official_member(account.member) or alumni_member(account.member))
+        if not (shared_event or account.is_system_admin or account.member_id==x.member_id or can_manage_request(account,x.type)):return {"error":"Accès refusé."},403
         return send_file(io.BytesIO(x.attachment_data),mimetype=x.attachment_type or "application/octet-stream",download_name=x.attachment_name or "piece-jointe",as_attachment=True)
 
     @app.route("/api/request-recipients",methods=["GET","PUT"])
@@ -3012,6 +3036,33 @@ Cette demande est également disponible dans HUB Soignies.""")
         audit(_, "DUTY_ASSIGNMENTS_PUBLISHED","duty_assignment",None,f"{start.isoformat()} to {end.isoformat()}; count={len(rows)}")
         db.session.commit();return {"status":"ok","published":len(rows)}
 
+    @app.get("/api/agenda")
+    def shared_agenda():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        if not (official_member(account.member) or alumni_member(account.member)):return {"error":"Agenda réservé aux membres et anciens actifs."},403
+        today=datetime.now(ZoneInfo("Europe/Brussels")).date()
+        month=request.args.get("month",today.strftime("%Y-%m"))
+        try:
+            start=datetime.strptime(month,"%Y-%m").date().replace(day=1)
+            end=(start.replace(day=28)+timedelta(days=4)).replace(day=1)
+        except (ValueError,OverflowError):return {"error":"Mois invalide."},400
+        items=[]
+        for meeting in Meeting.query.filter(Meeting.date>=start,Meeting.date<end).order_by(Meeting.date).all():
+            # A common calendar does not expose guest lists, private notes or board data.
+            items.append({"id":"meeting-"+str(meeting.id),"kind":"MEETING","date":meeting.date.isoformat(),"startTime":meeting.start_time.strftime("%H:%M") if meeting.start_time else None,"type":meeting.type,"status":meeting.status,"location":meeting.location})
+        for event in MemberRequest.query.filter(MemberRequest.type=="EVENT",MemberRequest.event_date>=start,MemberRequest.event_date<end).order_by(MemberRequest.event_date,MemberRequest.id).all():
+            owner=db.session.get(Member,event.member_id)
+            items.append({"id":"event-"+str(event.id),"kind":"EVENT","date":event.event_date.isoformat(),"startTime":event.event_time,"location":event.event_location,"title":event.title or "Événement partagé","message":event.message,"member":member_name(event.member_id),"origin":"ALUMNI" if owner and (owner.network_type=="OFF" or alumni_member(owner)) else "MEMBERS","attachmentId":event.id if event.attachment_data else None,"attachmentName":event.attachment_name})
+        next_role=None
+        if official_member(account.member):
+            own=DutyAssignment.query.join(Meeting,DutyAssignment.meeting_id==Meeting.id).filter(DutyAssignment.member_id==account.member_id,DutyAssignment.status.in_(["PUBLISHED","TO_REASSIGN"]),Meeting.date>=today,Meeting.status!="CANCELLED",Meeting.type!="NO_MEETING").order_by(Meeting.date,DutyAssignment.id).first()
+            if own:
+                meeting=db.session.get(Meeting,own.meeting_id)
+                team=DutyAssignment.query.filter(DutyAssignment.meeting_id==own.meeting_id,DutyAssignment.status.in_(["PUBLISHED","TO_REASSIGN"])).order_by(DutyAssignment.id).all()
+                next_role={"date":meeting.date.isoformat(),"startTime":meeting.start_time.strftime("%H:%M") if meeting.start_time else None,"location":meeting.location,"duties":[assignment_payload(a) for a in team if a.member_id==account.member_id],"team":[assignment_payload(a) for a in team if a.member_id!=account.member_id and official_member(db.session.get(Member,a.member_id))]}
+        return {"month":start.strftime("%Y-%m"),"items":sorted(items,key=lambda x:(x["date"],x.get("startTime") or "",x["id"])),"nextRole":next_role}
+
     @app.route("/api/meetings",methods=["GET","POST"])
     def meetings():
         account,_=bearer_account()
@@ -3031,7 +3082,10 @@ Cette demande est également disponible dans HUB Soignies.""")
                 try:start=datetime.strptime(data["startTime"],"%H:%M").time()
                 except ValueError:return {"error":"Heure invalide."},400
             m=Meeting(date=meeting_date,start_time=start,type=meeting_type,location=(data.get("location") or "").strip() or None,status=data.get("status","PLANNED"),notes=(data.get("notes") or "").strip() or None)
-            db.session.add(m);db.session.flush();audit(_, "MEETING_CREATED","meeting",m.id,f"date={meeting_date.isoformat()}; type={meeting_type}");db.session.commit()
+            db.session.add(m);db.session.flush()
+            if meeting_type in {"SPECIAL","EXTERNAL","HOSTED","JOINT"}:
+                notify_agenda_members(account.member_id,"Nouvelle date spéciale du groupe",f"Une nouvelle date est partagée dans l’agenda du groupe le {m.date.strftime('%d/%m/%Y')}.",m.date)
+            audit(_, "MEETING_CREATED","meeting",m.id,f"date={meeting_date.isoformat()}; type={meeting_type}");db.session.commit()
             return meeting_payload(m),201
         rows=Meeting.query.order_by(Meeting.date).all()
         return jsonify([meeting_payload(m) for m in rows])
@@ -3096,6 +3150,8 @@ Cette demande est également disponible dans HUB Soignies.""")
         if db.engine.dialect.name=="postgresql":db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_name VARCHAR(255)"))
         if db.engine.dialect.name=="postgresql":db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_type VARCHAR(120)"))
         if db.engine.dialect.name=="postgresql":db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_data BYTEA"))
+        if db.engine.dialect.name=="postgresql":db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS event_time VARCHAR(5)"))
+        if db.engine.dialect.name=="postgresql":db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS event_location VARCHAR(255)"))
         db.session.commit()
         # Existing admitted OFF members move into the isolated alumni space too.
         # Release only future duties; historical attendance and activity stay intact.

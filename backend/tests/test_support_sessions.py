@@ -40,6 +40,8 @@ class SupportSessionsTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/auth/me',headers=headers).get_json()['member']['environment'],'ALUMNI')
         self.assertEqual(self.client.get('/api/meetings',headers=headers).status_code,403)
         self.assertEqual(self.client.get('/api/network/members',headers=headers).status_code,200)
+        self.assertEqual(self.client.get('/api/agenda',headers=headers).status_code,200)
+        self.assertEqual(self.client.post('/api/me/requests',headers=headers,json={'type':'EVENT','title':'Read only','eventDate':'2099-02-05'}).status_code,403)
     def test_alumni_support_view_only_lists_activated_recipients(self):
         pending=hub.Member(first_name='Pending',last_name='Alumnus',network_type='OFF')
         hub.db.session.add(pending);hub.db.session.flush()

@@ -101,7 +101,7 @@ class AlumniSpacesTests(unittest.TestCase):
         self.assertEqual(me['environment'],'ALUMNI');self.assertFalse(me['isAdmin']);self.assertEqual(me['roles'],[])
         for path in ['/api/meetings','/api/planning/welcome','/api/documents','/api/resources','/api/platforms','/api/vault','/api/me/duty-assignments','/api/duty-assignments','/api/swaps/open','/api/me/home','/api/mandates','/api/members','/api/member-requests','/api/network/hub-summary','/api/network/contributors']:
             self.assertEqual(self.get(path,'off').status_code,403,path)
-        self.assertEqual(self.post('/api/me/requests',{'type':'EVENT','title':'x','message':'x'},'off').status_code,403)
+        self.assertEqual(self.post('/api/me/requests',{'type':'COMMUNICATION','title':'x','message':'x'},'off').status_code,403)
         self.assertEqual(self.get('/api/me/requests','off').status_code,200)
     def test_departure_needs_request_and_retains_identity_business_and_history(self):
         self.bridge()

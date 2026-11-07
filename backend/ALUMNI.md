@@ -153,3 +153,24 @@ vérification uniquement au HUB. Le bouton est disponible dans Administration
 Les résultats sont affichés dans l’administration et les refus techniques sont
 tracés dans les logs et le journal d’audit. Un résultat SMTP accepté ne confirme
 pas le classement effectif dans la boîte principale.
+
+## Agenda partagé
+
+`GET /api/agenda?month=YYYY-MM` est accessible aux comptes actifs des deux espaces,
+indépendamment du consentement aux échanges business. L'agenda présente les réunions
+(dates, type, horaire et lieu) ainsi que les demandes EVENT datées. Il ne donne pas
+accès aux invités, notes internes, documents ni fonctions administratives du groupe.
+Voir une réunion ne vaut pas invitation : les anciens utilisent les suppléances.
+
+Un membre ou un ancien publie un événement avec `POST /api/me/requests` (type EVENT,
+titre et eventDate obligatoires, eventTime et eventLocation facultatifs, pièce jointe
+jusqu'à 5 Mo). Les autres comptes activés des deux espaces reçoivent une notification
+qui ouvre le mois concerné. Les pièces jointes des événements datés sont partagées ;
+les autres demandes et leurs pièces jointes conservent leurs accès privés. Les
+anciennes propositions datées apparaissent aussi ; aucune date n'est inventée pour
+les propositions historiques sans date. Les mails au comité restent en place.
+
+Le Planning affiche le prochain rôle d'accueil publié du membre et ses collègues,
+quelle que soit la page mensuelle sélectionnée. Le bouton des permanences est gardé ;
+chez un ancien, il ouvre ses disponibilités et remplacements. Le mode assistance
+reste en lecture seule, y compris pour la publication d'événements.
