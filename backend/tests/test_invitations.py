@@ -35,6 +35,7 @@ class InvitationTests(unittest.TestCase):
         self.assertEqual(r.status_code,400);self.assertIn('expiré',r.get_json()['error'])
     def test_substitution_confirmation_names_both_members_and_only_emails_recipient_once(self):
         day=datetime.utcnow().date()+timedelta(days=7)
+        hub.db.session.add(hub.Meeting(date=day,type='REGULAR',status='PLANNED',location='Lieu de contrôle'))
         availability=hub.AlumniAvailability(member_id=self.ids['off'],date=day)
         hub.db.session.add(availability);hub.db.session.flush()
         item=hub.AlumniSubstitution(official_id=self.ids['active'],alumni_id=self.ids['off'],availability_id=availability.id,date=day)
@@ -50,6 +51,7 @@ class InvitationTests(unittest.TestCase):
             self.assertEqual(r.status_code,409);self.assertEqual(smtp.return_value.send_message.call_count,1)
     def test_smtp_failure_does_not_undo_confirmed_substitution(self):
         day=datetime.utcnow().date()+timedelta(days=7)
+        hub.db.session.add(hub.Meeting(date=day,type='REGULAR',status='PLANNED',location='Lieu de contrôle'))
         availability=hub.AlumniAvailability(member_id=self.ids['off'],date=day)
         hub.db.session.add(availability);hub.db.session.flush()
         item=hub.AlumniSubstitution(official_id=self.ids['active'],alumni_id=self.ids['off'],availability_id=availability.id,date=day)

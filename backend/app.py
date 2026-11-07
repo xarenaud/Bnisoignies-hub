@@ -366,6 +366,18 @@ class AlumniSubstitution(db.Model):
     status=db.Column(db.String(20),nullable=False,default="REQUESTED")
     created_at=db.Column(db.DateTime,nullable=False,default=datetime.utcnow)
 
+class AlumniReplacementNeed(db.Model):
+    __tablename__="alumni_replacement_needs"
+    id=db.Column(db.Integer,primary_key=True)
+    official_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    alumni_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=True,index=True)
+    date=db.Column(db.Date,nullable=False,index=True)
+    note=db.Column(db.String(500))
+    status=db.Column(db.String(20),nullable=False,default="OPEN")
+    created_at=db.Column(db.DateTime,nullable=False,default=datetime.utcnow)
+    accepted_at=db.Column(db.DateTime)
+    __table_args__=(db.UniqueConstraint("official_id","date",name="uq_replacement_need_official_date"),)
+
 class Meeting(db.Model):
     __tablename__="meetings"
     id=db.Column(db.Integer,primary_key=True)
@@ -548,6 +560,107 @@ def create_app():
         member=db.session.get(Member,x.member_id)
         return {"id":x.id,"memberId":x.member_id,"member":member_name(x.member_id),"company":member.company,"date":x.date.isoformat(),"note":x.note,"active":x.active}
 
+    def lock_replacement_members(*ids):
+        # Shared locks across open calls and targeted requests; stable order avoids deadlocks.
+        return Member.query.filter(Member.id.in_(ids)).order_by(Member.id).with_for_update().populate_existing().all()
+
+    def future_replacement_meeting(day):
+        now=datetime.now(ZoneInfo("Europe/Brussels"))
+        if day<now.date():return None
+        rows=Meeting.query.filter_by(date=day).filter(Meeting.type!="NO_MEETING",Meeting.status!="CANCELLED").order_by(Meeting.start_time).all()
+        return next((m for m in rows if day>now.date() or not m.start_time or m.start_time>now.time().replace(tzinfo=None)),None)
+
+    def replacement_conflict(day,official_id,alumni_id=None,exclude_target=None,exclude_need=None):
+        targeted=AlumniSubstitution.query.filter_by(date=day,status="ACCEPTED")
+        needs=AlumniReplacementNeed.query.filter_by(date=day,status="ACCEPTED")
+        if exclude_target:targeted=targeted.filter(AlumniSubstitution.id!=exclude_target)
+        if exclude_need:needs=needs.filter(AlumniReplacementNeed.id!=exclude_need)
+        targeted=targeted.filter(db.or_(AlumniSubstitution.official_id==official_id,AlumniSubstitution.alumni_id==alumni_id)) if alumni_id else targeted.filter_by(official_id=official_id)
+        needs=needs.filter(db.or_(AlumniReplacementNeed.official_id==official_id,AlumniReplacementNeed.alumni_id==alumni_id)) if alumni_id else needs.filter_by(official_id=official_id)
+        return targeted.first() is not None or needs.first() is not None
+
+    def replacement_mail(member_id,title,message):
+        try:
+            member=db.session.get(Member,member_id)
+            email=member.user_account.email if member.user_account else member.email
+            base=os.getenv("APP_URL","https://hub.bim-soignies.be").strip().rstrip("/") or "https://hub.bim-soignies.be"
+            return send_simple_email(email,"HUB — "+title,f"Bonjour {member.first_name},\n\n{message}\n\nOuvre ton app pour consulter la suppléance :\n{base}/?substitutions=1\n")
+        except Exception:
+            app.logger.exception("Substitution email delivery failed")
+            return False
+
+    def replacement_need_payload(x,viewer_id):
+        meeting=future_replacement_meeting(x.date)
+        participant=viewer_id in {x.official_id,x.alumni_id}
+        return {"id":x.id,"officialId":x.official_id,"official":member_name(x.official_id),"alumniId":x.alumni_id,"alumni":member_name(x.alumni_id) if x.alumni_id else None,"date":x.date.isoformat(),"note":x.note,"status":x.status,"acceptedAt":x.accepted_at.isoformat() if x.accepted_at else None,"location":meeting.location if meeting and participant else None,"startTime":meeting.start_time.strftime("%H:%M") if meeting and participant and meeting.start_time else None}
+
+    @app.route("/api/alumni-space/replacement-needs",methods=["GET","POST"])
+    def replacement_needs():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        is_alumni=alumni_member(account.member)
+        if not is_alumni and not network_bridge_enabled(account):return {"error":"Activez personnellement la liaison avec les anciens."},403
+        if request.method=="GET":
+            rows=AlumniReplacementNeed.query.order_by(AlumniReplacementNeed.date.desc(),AlumniReplacementNeed.id.desc()).all()
+            if is_alumni:
+                rows=[x for x in rows if x.alumni_id==account.member_id or (x.date>=datetime.now(ZoneInfo("Europe/Brussels")).date() and official_member(db.session.get(Member,x.official_id)) and db.session.get(Member,x.official_id).alumni_bridge_enabled and (x.status!="OPEN" or future_replacement_meeting(x.date)))]
+            else:rows=[x for x in rows if x.official_id==account.member_id]
+            return jsonify([replacement_need_payload(x,account.member_id) for x in rows])
+        if is_alumni:return {"error":"Seul un membre actif peut publier un besoin."},403
+        data=request.get_json(silent=True) or {}
+        try:day=date.fromisoformat(data.get("date",""))
+        except (ValueError,TypeError):return {"error":"Date invalide."},400
+        lock_replacement_members(account.member_id)
+        if not network_bridge_enabled(account):return {"error":"La liaison personnelle est désactivée."},403
+        if not future_replacement_meeting(day):return {"error":"Choisissez une réunion à venir programmée dans le planning."},400
+        if replacement_conflict(day,account.member_id):return {"error":"Votre remplacement est déjà assuré à cette date."},409
+        x=AlumniReplacementNeed.query.filter_by(official_id=account.member_id,date=day).with_for_update().first()
+        if x and x.status!="CANCELLED":return {"error":"Un besoin existe déjà pour cette date."},409
+        if not x:x=AlumniReplacementNeed(official_id=account.member_id,date=day);db.session.add(x)
+        x.status="OPEN";x.note=str(data.get("note") or "")[:500];x.alumni_id=None;x.accepted_at=None
+        targets=[m.id for m in Member.query.all() if alumni_member(m) and m.user_account and m.user_account.status=="ACTIVE"]
+        message=f"{member_name(account.member_id)} recherche un suppléant le {day.isoformat()}. Le premier ancien qui accepte s’engage à assurer son remplacement."
+        for target in targets:notify(target,"SUBSTITUTION_OPEN","Suppléance recherchée",message,"substitutions")
+        db.session.flush();audit(account,"REPLACEMENT_NEED_CREATED","replacement_need",x.id,day.isoformat());db.session.commit()
+        payload=replacement_need_payload(x,account.member_id)
+        payload["emailSentCount"]=sum(bool(replacement_mail(target,"Suppléance recherchée",message)) for target in targets)
+        payload["notifiedCount"]=len(targets)
+        return payload,201
+
+    @app.route("/api/alumni-space/replacement-needs/<int:item_id>",methods=["POST","DELETE"])
+    def respond_replacement_need(item_id):
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        x=db.session.get(AlumniReplacementNeed,item_id)
+        if not x:return {"error":"Besoin introuvable."},404
+        if request.method=="DELETE":
+            if x.official_id!=account.member_id or not official_member(account.member):return {"error":"Cette demande appartient à un autre membre."},403
+            lock_replacement_members(x.official_id,*([x.alumni_id] if x.alumni_id else []))
+            x=AlumniReplacementNeed.query.filter_by(id=item_id).with_for_update().populate_existing().first()
+            if x.status=="CANCELLED":return replacement_need_payload(x,account.member_id)
+            x.status="CANCELLED"
+            if x.alumni_id:notify(x.alumni_id,"SUBSTITUTION_CANCELLED","Suppléance annulée",f"{member_name(x.official_id)} a annulé le remplacement du {x.date.isoformat()}.","substitutions")
+            audit(account,"REPLACEMENT_NEED_CANCELLED","replacement_need",x.id);db.session.commit()
+            if x.alumni_id:replacement_mail(x.alumni_id,"Suppléance annulée",f"{member_name(x.official_id)} a annulé le remplacement du {x.date.isoformat()}.")
+            return replacement_need_payload(x,account.member_id)
+        if not alumni_member(account.member):return {"error":"Seul un ancien peut accepter cette suppléance."},403
+        lock_replacement_members(x.official_id,account.member_id)
+        x=AlumniReplacementNeed.query.filter_by(id=item_id).with_for_update().populate_existing().first()
+        official=db.session.get(Member,x.official_id)
+        if not official_member(official) or not official.alumni_bridge_enabled:return {"error":"La liaison du membre est désactivée."},403
+        if x.status!="OPEN":return {"error":"Cette suppléance n’est plus disponible.","need":replacement_need_payload(x,account.member_id)},409
+        if not future_replacement_meeting(x.date):return {"error":"Cette réunion n’est plus à venir ou a été annulée."},400
+        if replacement_conflict(x.date,x.official_id,account.member_id,exclude_need=x.id):return {"error":"Un remplacement est déjà accepté pour ce membre ou pour vous à cette date."},409
+        changed=AlumniReplacementNeed.query.filter_by(id=x.id,status="OPEN").update({"status":"ACCEPTED","alumni_id":account.member_id,"accepted_at":datetime.utcnow()},synchronize_session=False)
+        if changed!=1:db.session.rollback();return {"error":"Un autre ancien a déjà accepté cette suppléance."},409
+        db.session.refresh(x)
+        message=f"{member_name(x.alumni_id)} a accepté de remplacer {member_name(x.official_id)} le {x.date.isoformat()}."
+        notify(x.official_id,"SUBSTITUTION_ACCEPTED","Suppléance confirmée",message,"substitutions")
+        for m in Member.query.all():
+            if alumni_member(m) and m.user_account and m.user_account.status=="ACTIVE":notify(m.id,"SUBSTITUTION_FILLED","Votre engagement est confirmé" if m.id==x.alumni_id else "Suppléance pourvue",message,"substitutions")
+        audit(account,"REPLACEMENT_NEED_ACCEPTED","replacement_need",x.id);db.session.commit()
+        return {**replacement_need_payload(x,account.member_id),"emailSent":replacement_mail(x.official_id,"Suppléance confirmée",message)}
+
     @app.route("/api/alumni-space/availability",methods=["GET","POST"])
     def alumni_availability():
         account,err=require_feature("REFERRALS")
@@ -590,15 +703,19 @@ def create_app():
         if not official_member(account.member) or not account.member.alumni_bridge_enabled:return {"error":"Activez personnellement la liaison avec les anciens."},403
         try:item_id=int((request.get_json(silent=True) or {}).get("availabilityId"))
         except (ValueError,TypeError):return {"error":"Disponibilité invalide."},400
-        availability=AlumniAvailability.query.filter_by(id=item_id).with_for_update().first()
+        availability=db.session.get(AlumniAvailability,item_id)
+        if not availability:return {"error":"Disponibilité introuvable."},404
+        lock_replacement_members(account.member_id,availability.member_id)
+        availability=AlumniAvailability.query.filter_by(id=item_id).with_for_update().populate_existing().first()
         if not availability or not availability.active or availability.date<date.today():return {"error":"Cette disponibilité n'est plus proposée."},400
         target=db.session.get(Member,availability.member_id)
         if not alumni_member(target):return {"error":"Cet ancien n'est plus disponible."},400
-        meeting=Meeting.query.filter_by(date=availability.date).filter(Meeting.type!="NO_MEETING",Meeting.status!="CANCELLED").first()
+        meeting=future_replacement_meeting(availability.date)
         if not meeting:return {"error":"Aucune réunion n'est programmée à cette date."},400
         existing=AlumniSubstitution.query.filter_by(official_id=account.member_id,alumni_id=target.id,date=availability.date).filter(AlumniSubstitution.status.in_(["REQUESTED","ACCEPTED"])).first()
         if existing:return substitution_payload(existing)
         if AlumniSubstitution.query.filter_by(alumni_id=target.id,date=availability.date,status="ACCEPTED").first():return {"error":"Cet ancien est déjà engagé à cette date."},409
+        if replacement_conflict(availability.date,account.member_id,target.id):return {"error":"Un remplacement est déjà accepté pour cette date."},409
         x=AlumniSubstitution(official_id=account.member_id,alumni_id=target.id,availability_id=availability.id,date=availability.date)
         db.session.add(x);notify(target.id,"SUBSTITUTION_REQUEST","Demande de suppléance",member_name(account.member_id)+" vous sollicite pour le "+availability.date.isoformat(),"substitutions")
         db.session.commit();return substitution_payload(x),201
@@ -609,6 +726,8 @@ def create_app():
         if not account:return {"error":"Authentification requise."},401
         x=db.session.get(AlumniSubstitution,item_id)
         if not x or account.member_id not in {x.official_id,x.alumni_id}:return {"error":"Demande introuvable."},404
+        lock_replacement_members(x.official_id,x.alumni_id)
+        x=AlumniSubstitution.query.filter_by(id=item_id).with_for_update().populate_existing().first()
         status=(request.get_json(silent=True) or {}).get("status")
         if status=="CANCELLED" and account.member_id==x.official_id:
             x.status=status
@@ -616,6 +735,8 @@ def create_app():
             if x.status!="REQUESTED":return {"error":"Cette demande a déjà été traitée."},409
             if x.date<date.today():return {"error":"Cette date est passée."},400
             if status=="ACCEPTED":
+                if not future_replacement_meeting(x.date):return {"error":"Cette réunion n’est plus à venir ou a été annulée."},400
+                if replacement_conflict(x.date,x.official_id,x.alumni_id,exclude_target=x.id):return {"error":"Un remplacement est déjà accepté pour cette date."},409
                 official=db.session.get(Member,x.official_id)
                 if not official_member(official) or not official.alumni_bridge_enabled:return {"error":"La liaison de ce membre actif est désactivée."},403
                 AlumniAvailability.query.filter_by(id=x.availability_id).with_for_update().first()

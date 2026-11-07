@@ -4,8 +4,13 @@ const wait=()=>new Promise(r=>setTimeout(r,60));
 async function mount(environment='MEMBERS',admin=false,url='https://hub.test/'){
  if(!bundle){const r=await esbuild.build({entryPoints:[path.join(__dirname,'../src/main.jsx')],bundle:true,write:false,format:'iife',loader:{'.css':'empty'},define:{'import.meta.env.VITE_API_URL':'"https://hub.test/api"','import.meta.env.PROD':'false'}});bundle=r.outputFiles[0].text;}
  const dom=new JSDOM('<div id="root"></div>',{url,runScripts:'dangerously'}),w=dom.window;const errors=[];w.addEventListener('error',e=>errors.push(e.message));w.localStorage.setItem('bni_token','fixture');w.confirm=()=>true;
- const calls=[];let opted=false;const user=()=>({id:1,firstName:'Test',lastName:'Membre',email:'fixture@example.test',environment,alumniBridgeEnabled:opted,networkModuleEnabled:environment==='ALUMNI'||opted,networkAccessEnabled:environment==='ALUMNI'||opted,roles:[],isAdmin:admin,isSystemAdmin:admin});
+ const calls=[];let opted=false;let needs=environment==='ALUMNI'?[{id:9,date:'2099-02-05',official:'Membre actif',officialId:2,status:'OPEN',note:'Remplacement demandé'}]:[];const user=()=>({id:1,firstName:'Test',lastName:'Membre',email:'fixture@example.test',environment,alumniBridgeEnabled:opted,networkModuleEnabled:environment==='ALUMNI'||opted,networkAccessEnabled:environment==='ALUMNI'||opted,roles:[],isAdmin:admin,isSystemAdmin:admin});
  w.fetch=async(url,options={})=>{calls.push({url,method:options.method||'GET'});const p=new URL(url).pathname.replace('/api','');let data=[];
+  if(p==='/meetings')data=[{id:4,date:'2099-02-05',type:'REGULAR',status:'PLANNED',location:'Lieu de réunion'}];
+  if(p==='/alumni-space/replacement-needs'){
+   if(options.method==='POST'){const d=JSON.parse(options.body);needs=[{id:9,...d,official:'Membre actif',officialId:1,status:'OPEN'}];data={...needs[0],notifiedCount:1};}else data=needs;
+  }
+  if(p==='/alumni-space/replacement-needs/9'&&options.method==='POST'){needs=needs.map(n=>({...n,status:'ACCEPTED',alumni:'Test Membre',alumniId:1}));data=needs[0];}
   if(p==='/auth/me')data={member:user()};
   if(p==='/members/3/invite')data={activationUrl:'https://hub.test/?activate=fixture-invitation',emailSent:false,expiresInHours:48};
   if(p==='/auth/activate')data={status:'ACTIVE'};
@@ -35,45 +40,6 @@ test('admin entry and imports share one explicit destination',async()=>{const f=
 test('inviting an alumnus displays the activation link without crashing',async()=>{const f=await mount('MEMBERS',true);try{await f.click('Ouvrir');[...f.w.document.querySelectorAll('button')].find(b=>b.querySelector('b')?.textContent==='Membres').click();await wait();await wait();await f.click('Anciens membres (1)');await f.click('Inviter');assert.deepEqual(f.errors,[]);assert.ok(f.text().includes('Invitation créée pour Ancien Test'));const link=f.w.document.querySelector('.inviteBox a');assert.equal(link?.href,'https://hub.test/?activate=fixture-invitation');assert.ok(f.text().includes('Copier le lien'));}finally{f.close();}});
 test('invitation URL opens password activation even when another session exists',async()=>{const f=await mount('MEMBERS',true,'https://hub.test/?activate=fixture-invitation');try{assert.ok(f.text().includes('Choisissez votre mot de passe'));const form=f.w.document.querySelector('form');form.elements.password.value='FixturePassword123';form.elements.confirm.value='FixturePassword123';form.dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));await wait();await wait();assert.ok(f.text().includes('Compte activé'));assert.deepEqual(f.errors,[]);}finally{f.close();}});
 
-test('system admin can walk through both demo participants without production writes',async()=>{const f=await mount('MEMBERS',true);try{
- await f.click('Vue Ancien membre');assert.ok(f.text().includes('Mode test · Ancien membre'));assert.ok(f.text().includes('HUB Anciens'));
- await f.click('Tester côté membre');await f.click('Profil');await f.click('J’active personnellement ma liaison');await f.click('Participer');await f.click('Recommandations');
- let form=f.w.document.querySelector('form');form.elements.toMemberId.value='-2';form.elements.contactName.value='Contact du parcours';form.dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));await wait();await wait();assert.ok(f.text().includes('Encodage enregistré.'));
- await f.click('Tester côté ancien');await f.click('Échanges');assert.ok(f.text().includes('Contact du parcours'));
- await f.click(' Business');form=f.w.document.querySelector('form');form.elements.creditedMemberId.value='-1';form.elements.amount.value='125';form.dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));await wait();await wait();assert.ok(f.text().includes('crédité à Membre Test'));
- await f.click(' TàT');form=f.w.document.querySelector('form');form.elements.partnerMemberId.value='-1';form.dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));await wait();await wait();assert.ok(f.text().includes('Ancien Test ↔ Membre Test'));
- await f.click(' Recommandations');let status=f.w.document.querySelector('.memberList select');status.value='NO_FOLLOW_UP';status.dispatchEvent(new f.w.Event('change',{bubbles:true}));await wait();
- await f.click('Suppléances');form=f.w.document.querySelector('form');form.elements.date.value='2099-01-01';form.dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));await wait();await wait();assert.ok(f.text().includes('2099-01-01'));
- await f.click('Tester côté membre');await f.click('Participer');await f.click('Solliciter une suppléance');await f.click('Demander une suppléance');
- await f.click('Tester côté ancien');await f.click('Suppléances');await f.click('Accepter');assert.ok(f.text().includes('Acceptée'));assert.ok(f.text().includes('Ancien Test a accepté de remplacer Membre Test le 2099-01-01.'));
- await f.click('Tester côté membre');await f.click('Participer');await f.click('MPB');assert.ok(f.text().includes('crédité à Membre Test'));
- await f.click('Profil');await f.click('Désactiver ma liaison');await f.click('Participer');assert.ok(![...f.w.document.querySelectorAll('button')].some(b=>b.textContent==='MPB'));
- await f.click('Réinitialiser le test');await f.click('Échanges');assert.ok(!f.text().includes('Contact du parcours'));
- assert.equal(f.calls.filter(c=>c.method!=='GET').length,0);assert.deepEqual(f.errors,[]);
- await f.click('Quitter le test');assert.ok(f.text().includes('Vue Ancien membre'));assert.ok(!f.text().includes('Mode test ·'));
-}finally{f.close();}});
-test('ordinary members cannot open admin preview through a forged UI event',async()=>{const f=await mount();try{assert.ok(!f.text().includes('Vue Ancien membre'));f.w.dispatchEvent(new f.w.Event('hub:preview-alumni'));await wait();assert.ok(!f.text().includes('Mode test ·'));assert.deepEqual(f.errors,[]);}finally{f.close();}});
-
-test('open replacement call notifies both alumni and only the first can commit',async()=>{const f=await mount('MEMBERS',true);try{
- await f.click('Vue Ancien membre');await f.click('Tester côté membre');await f.click('Profil');await f.click('J’active personnellement ma liaison');await f.click('Participer');await f.click('Solliciter une suppléance');
- const form=f.w.document.querySelector('form');form.elements.date.value='2099-02-05';form.elements.note.value='Besoin ouvert de test';form.dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));await wait();await wait();assert.ok(f.text().includes('Besoin publié.'));
- for(const actor of ['Tester côté ancien','Tester un autre ancien']){await f.click(actor);f.w.document.querySelector('header button[title="Notifications"]').click();await wait();await wait();assert.ok(f.text().includes('Suppléance recherchée'));assert.ok(f.text().includes('2099-02-05'));}
- await f.click('Tester côté ancien');await f.click('Suppléances');await f.click('Je m’engage à assurer la suppléance');assert.ok(f.text().includes('Votre engagement est confirmé.'));assert.ok(f.text().includes('Ancien Test a accepté de remplacer Membre Test le 2099-02-05.'));
- await f.click('Tester un autre ancien');await f.click('Suppléances');assert.ok(f.text().includes('Prise en charge par Ancien Test'));assert.ok(!f.text().includes('Je m’engage à assurer la suppléance'));
- await f.click('Tester côté membre');f.w.document.querySelector('header button[title="Notifications"]').click();await wait();await wait();assert.ok(f.text().includes('Suppléance confirmée'));assert.ok(f.text().includes('Ancien Test a accepté de remplacer Membre Test le 2099-02-05.'));
- await f.click('E-mails de test');assert.ok(f.text().includes('Boîte mail simulée · Membre Test'));assert.ok(f.text().includes('À : membre@example.test'));assert.ok(f.text().includes('HUB — Suppléance confirmée'));assert.ok(f.text().includes('Ancien Test a accepté de remplacer Membre Test le 2099-02-05.'));assert.ok(f.text().includes('https://hub.test/'));
- assert.equal(f.calls.filter(c=>c.method!=='GET').length,0);assert.deepEqual(f.errors,[]);
-}finally{f.close();}});
-test('two immediate acceptance attempts keep only the first commitment in demo',async()=>{
- const {startPreview,stopPreview,selectPreviewActor,hubFetch}=await import('../src/preview.js');global.location={origin:'https://hub.test'};
- const call=(p,data)=>hubFetch('https://hub.test/api'+p,{method:'POST',body:JSON.stringify(data)});
- try{startPreview({isSystemAdmin:true});selectPreviewActor('MEMBERS');
- assert.equal((await call('/alumni-space/replacement-needs',{date:'2099-02-05'})).status,403);
- await hubFetch('https://hub.test/api/me/alumni-bridge',{method:'PUT',body:'{"enabled":true}'});
- const need=await(await call('/alumni-space/replacement-needs',{date:'2099-02-05'})).json();
- selectPreviewActor('ALUMNI');const first=call('/alumni-space/replacement-needs/'+need.id,{});
- selectPreviewActor('ALUMNI2');const second=call('/alumni-space/replacement-needs/'+need.id,{});
- const [a,b]=await Promise.all([first,second]);assert.equal(a.status,200);assert.equal(b.status,409);assert.equal((await a.json()).alumniId,-2);
- const needs=await(await hubFetch('https://hub.test/api/alumni-space/replacement-needs')).json();assert.equal(needs.length,1);assert.equal(needs[0].alumniId,-2);
- }finally{stopPreview();delete global.location;}
-});
+test('administrator no longer has a simulator or alumni preview',async()=>{const f=await mount('MEMBERS',true);try{assert.ok(!f.text().includes('Vue Ancien membre'));f.w.dispatchEvent(new f.w.Event('hub:preview-alumni'));await wait();assert.ok(!f.text().includes('Mode test'));assert.ok(!f.text().includes('E-mails de test'));assert.deepEqual(f.errors,[]);}finally{f.close();}});
+test('member publishes an open need using production route and planned meeting',async()=>{const f=await mount();try{await f.click('Profil');await f.click('J’active personnellement ma liaison');await f.click('Participer');await f.click('Solliciter une suppléance');assert.ok(f.text().includes('Signaler un besoin de suppléance'));const form=f.w.document.querySelector('form');form.elements.date.value='2099-02-05';form.elements.note.value='Besoin de remplacement';form.dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));await wait();await wait();assert.ok(f.text().includes('Besoin publié'));assert.ok(f.calls.some(c=>c.url.endsWith('/alumni-space/replacement-needs')&&c.method==='POST'));assert.deepEqual(f.errors,[]);}finally{f.close();}});
+test('alumnus opens email deep link and accepts via production route',async()=>{const f=await mount('ALUMNI',false,'https://hub.test/?substitutions=1');try{assert.ok(f.text().includes('Suppléances recherchées'));await f.click('Je m’engage à assurer la suppléance');assert.ok(f.text().includes('Test Membre a accepté de remplacer Membre actif le 2099-02-05.'));assert.ok(f.calls.some(c=>c.url.endsWith('/alumni-space/replacement-needs/9')&&c.method==='POST'));assert.deepEqual(f.errors,[]);}finally{f.close();}});

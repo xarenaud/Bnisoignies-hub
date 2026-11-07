@@ -28,42 +28,41 @@ L’import présente un aperçu, bloque les doublons et les changements d’espa
 involontaires, puis revalide tout le lot avant toute écriture. Les anciens déjà
 archivés conservent leur identifiant et leurs anciennes adhésions.
 
-## Aperçu administrateur des deux participants
+## Suppléances en production
 
-Le bouton « Vue Ancien membre » est réservé au compte administrateur système.
-Il ouvre un parcours local en mémoire avec un membre actif et deux anciens fictifs, et réutilise
-les composants Membres et Anciens. Le bandeau permet de changer de participant,
-réinitialiser les essais ou revenir au compte réel. Aucun statut réel ne change.
-`src/preview.js` intercepte les appels de ces composants pendant le test :
-seule la lecture de la session réelle (`GET /auth/me`) est transmise au serveur.
-Toutes les autres requêtes restent locales et les écritures non simulées sont
-refusées. La navigation de test est séparée de la navigation réelle. Les essais
-(recommandations, MPB, TAT, liaison, notifications et suppléances) disparaissent
-à la fermeture du test ou au rechargement. Ce simulateur vérifie le parcours
-visuel et les échanges entre participants ; il ne remplace pas les tests API
-d’isolation, de consentement, de réunion existante ou d’envoi de mails.
+Les appels ouverts sont disponibles dans Participer → Solliciter une suppléance
+pour chaque membre actif ayant personnellement activé sa liaison. La date est
+choisie parmi les réunions à venir. La publication avertit par notification et
+par e-mail tous les anciens admis ayant un compte actif. Aucun mailing de
+recrutement ou d’invitation n’est lancé au déploiement.
 
-### Appels ouverts de suppléance (test uniquement)
+Le premier ancien qui confirme son engagement obtient le remplacement. Les
+autres voient que l’appel est pourvu. Le membre remplacé reçoit une notification
+et un e-mail nommant les deux personnes, la date et le lien vers la demande.
+Les détails du lieu et de l’horaire restent réservés au membre demandeur et au
+suppléant retenu ; les autres anciens gardent uniquement l’annonce de l’appel.
 
-Le membre fictif ayant activé sa liaison peut publier un besoin daté dans
-Participer → Solliciter une suppléance. Aucune disponibilité préalable n’est
-requise. Les deux anciens fictifs reçoivent « Suppléance recherchée ». Le bouton
-d’acceptation demande confirmation de l’engagement. La première acceptation
-attribue le remplacement et notifie le membre ainsi que les deux anciens.
-Toute acceptation suivante renvoie un conflit 409, sans changer le titulaire.
-Le bandeau permet de basculer vers le deuxième ancien pour vérifier ce cas.
-Les routes `/alumni-space/replacement-needs` sont simulées uniquement dans
-`src/preview.js` : aucun endpoint, compte, notification ni réservation n’est
-créé sur le serveur de production. Les tests couvrent aussi deux tentatives
-immédiates d’acceptation. Une future mise en production nécessitera son propre
-verrouillage transactionnel en base et des contrôles sur la réunion réelle.
+Les routes sont `GET/POST /alumni-space/replacement-needs`,
+`POST /alumni-space/replacement-needs/<id>` pour accepter et `DELETE` pour
+annuler son propre appel. La table `alumni_replacement_needs` est créée au
+démarrage, sans modifier les historiques existants. Une contrainte unique
+empêche deux appels du même membre pour la même date. L’acceptation prend les
+verrous des membres dans un ordre stable, verrouille l’appel et applique une
+mise à jour conditionnelle `OPEN → ACCEPTED`. Les demandes ciblées utilisent les
+mêmes verrous et vérifications de conflit, pour éviter les doubles réservations
+d’un membre ou d’un suppléant entre les deux parcours.
 
-### E-mails de confirmation
+Les e-mails sont envoyés après validation de la transaction ; une panne SMTP
+ne revient pas sur un engagement enregistré. Le rejeu d’une acceptation est
+refusé et ne renvoie pas la confirmation. Les contrôles d’accès et de consentement
+sont appliqués côté serveur à chaque opération. Les liens d’e-mail et les
+notifications ouvrent l’onglet Suppléances de l’interface du destinataire.
 
-Lorsqu’une demande ciblée réelle est acceptée, le serveur envoie après validation
-un e-mail uniquement au membre remplacé : nom de l’ancien, nom du membre remplacé,
-date et lien HUB. Une deuxième acceptation est rejetée et ne renvoie pas le mail.
-Une panne SMTP ne revient pas sur un engagement déjà enregistré.
-Dans le mode test, les notifications génèrent des e-mails simulés consultables
-avec « E-mails de test » pour le participant sélectionné ; ils ne quittent pas
-le navigateur. Cela couvre aussi l’appel ouvert, toujours limité au simulateur.
+Le simulateur, sa boîte mail et l’aperçu Ancien membre de l’administrateur ont
+été supprimés. Les données du simulateur étaient uniquement en mémoire dans le
+navigateur et n’ont pas été transférées dans la base réelle.
+
+La suite vérifie les accès, les dates, les destinataires des mails, les deux
+parcours, les conflits et deux acceptations concurrentes sur la base SQLite
+isolée. Les verrous `FOR UPDATE` sont appliqués par PostgreSQL en production ;
+les essais automatisés locaux ne constituent pas un test de charge PostgreSQL.
