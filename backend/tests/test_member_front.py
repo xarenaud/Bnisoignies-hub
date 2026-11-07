@@ -88,13 +88,11 @@ class MemberFrontTests(unittest.TestCase):
         self.assertEqual(profile['subscription']['startsAt'],date.today().isoformat())
 
     def test_mandate_boundaries_and_private_archive(self):
-        today=datetime.now(hub.ZoneInfo('Europe/Brussels')).date()
-        current_mandate=hub.Mandate.query.filter_by(name='Actuelle').one()
-        current_mandate.start_date=today-timedelta(days=15)
-        current_mandate.end_date=today+timedelta(days=15)
-        old=hub.Mandate(name='Passée',start_date=today-timedelta(days=60),end_date=today-timedelta(days=16))
+        old=hub.Mandate(name='Passée',start_date=date.today()-timedelta(days=60),end_date=date.today()-timedelta(days=16))
         hub.db.session.add(old);hub.db.session.flush()
-        for day,amount in [(old.start_date,10),(old.end_date,20),(today,30),(today+timedelta(days=1),40)]:
+        # Yesterday is included and two days ahead excluded in both UTC and Brussels,
+        # including runs during the hour when their calendar dates differ.
+        for day,amount in [(old.start_date,10),(old.end_date,20),(date.today()-timedelta(days=1),30),(date.today()+timedelta(days=2),40)]:
             hub.db.session.add(hub.BusinessThanks(from_member_id=self.ids['off'],credited_member_id=self.ids['active'],amount=amount,business_date=day))
         hub.db.session.commit()
         current=self.client.get('/api/network/stats?months=24',headers=self.headers['active']).get_json()
