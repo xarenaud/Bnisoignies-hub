@@ -130,3 +130,26 @@ Routes : `POST /system/support-sessions` avec `memberId` (super administrateur),
 puis `POST /system/support-sessions/stop` avec le jeton délégué. Deux colonnes
 nullables de `auth_sessions` identifient l’acteur et la session parente ; elles
 sont ajoutées au démarrage sur PostgreSQL sans changer les sessions existantes.
+
+## Diagnostic et récupération des copies d’invitation
+
+Chaque copie possède désormais son propre en-tête To (hub@bim-soignies.be),
+un objet préfixé « Copie HUB », une date et un Message-ID distinct. Le contenu
+d’invitation est conservé ; l’enveloppe SMTP n’inclut que le HUB. L’original
+conserve son destinataire et son Cc visibles, sans deuxième envoi au membre.
+Les erreurs exposent une catégorie non secrète et, si disponible, le code SMTP.
+Le refus d’un destinataire peut inclure la réponse du serveur (bornée et sans
+sauts de ligne) ; les erreurs d’authentification n’exposent jamais leur contenu.
+
+`POST /members/<id>/invite-copy` est réservé aux administrateurs et reprend le
+lien existant d’une invitation d’ancien encore valide, sans changer le compte,
+le jeton ou la date d’expiration, et sans envoyer de message au membre. Une
+invitation consommée ou expirée est refusée. L’annuaire propose « Renvoyer copie
+HUB » pour les anciens dont l’invitation est en attente.
+
+`POST /system/mail-test`, réservé au super administrateur, envoie un message de
+vérification uniquement au HUB. Le bouton est disponible dans Administration
+→ Membres. Ces deux actions restent interdites en session Doppelganger.
+Les résultats sont affichés dans l’administration et les refus techniques sont
+tracés dans les logs et le journal d’audit. Un résultat SMTP accepté ne confirme
+pas le classement effectif dans la boîte principale.

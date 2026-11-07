@@ -1621,39 +1621,15 @@ def create_app():
         out=io.BytesIO();wb.save(out);out.seek(0)
         return send_file(out,as_attachment=True,download_name=f"HUB-Soignies-Membres-{date.today().isoformat()}.xlsx",mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-    @app.post("/api/members/<int:member_id>/invite")
-    def invite_member(member_id):
-        inviter,auth_error=require_admin()
-        if auth_error:return auth_error
-        member=db.session.get(Member,member_id)
-        if not member:
-            return {"error":"Membre introuvable."},404
-        if not member.email:
-            return {"error":"Une adresse e-mail est nécessaire pour créer l'accès."},400
-        existing=UserAccount.query.filter(db.func.lower(UserAccount.email)==member.email.lower()).first()
-        if existing and existing.member_id!=member.id:
-            return {"error":"Cette adresse e-mail est déjà liée à un autre compte."},409
-        account=member.user_account or UserAccount(member_id=member.id,email=member.email.lower())
-        account.email=member.email.lower()
-        account.status="INVITED"
-        account.invitation_token=secrets.token_urlsafe(32)
-        account.invitation_expires_at=datetime.utcnow()+timedelta(hours=48)
-        if not account.id: db.session.add(account)
-        db.session.commit()
+    def invitation_message(member,activation_url,copy_email):
         base=HUB_APP_URL
-        activation_url=f"{base}/?activate={account.invitation_token}"
-        email_sent=False
-        membership=active_membership_for(member.id)
-        copy_email="hub@bim-soignies.be" if alumni_member(member) or (membership and membership.status=="FORMER") else None
-        copy_sent=False if copy_email else None
-        host=os.getenv("SMTP_HOST","").strip();sender=os.getenv("SMTP_FROM","").strip()
-        if host and sender:
-            msg=EmailMessage()
-            space="HUB Anciens" if alumni_member(member) else "HUB Soignies"
-            invitation_text="Gardez le contact avec les anciens et échangez recommandations, MPB et TAT. Les échanges avec les membres actifs sont limités à ceux qui ont activé leur liaison personnelle." if alumni_member(member) else "Retrouvez les informations et la vie du groupe dans votre espace Membres."
-            msg["Subject"]=space+" — votre invitation"
-            msg["From"]=sender;msg["To"]=member.email
-            msg.set_content(f"""Bonjour {member.first_name},
+        sender=os.getenv("SMTP_FROM","").strip()
+        msg=EmailMessage()
+        space="HUB Anciens" if alumni_member(member) else "HUB Soignies"
+        invitation_text="Gardez le contact avec les anciens et échangez recommandations, MPB et TAT. Les échanges avec les membres actifs sont limités à ceux qui ont activé leur liaison personnelle." if alumni_member(member) else "Retrouvez les informations et la vie du groupe dans votre espace Membres."
+        msg["Subject"]=space+" — votre invitation"
+        msg["From"]=sender;msg["To"]=member.email or member.user_account.email
+        msg.set_content(f"""Bonjour {member.first_name},
 
 Vous êtes invité(e) à découvrir {space}.
 
@@ -1684,10 +1660,10 @@ L’icône HUB vous permettra de retrouver votre espace. Connectez-vous avec l�
 Si le lien s’ouvre dans le navigateur intégré de votre messagerie, copiez l’adresse du HUB dans Safari (iPhone) ou Chrome (Android).
 
 À bientôt sur HUB Soignies.""")
-            if alumni_member(member):
-                msg.replace_header("Subject","Et si on gardait le lien ? Découvre le HUB des anciens")
-                msg["Cc"]="hub@bim-soignies.be"
-                msg.set_content(f"""Bonjour {member.first_name},
+        if alumni_member(member):
+            msg.replace_header("Subject","Et si on gardait le lien ? Découvre le HUB des anciens")
+            msg["Cc"]="hub@bim-soignies.be"
+            msg.set_content(f"""Bonjour {member.first_name},
 
 Tu as fait partie du BNI de Soignies. Nous y avons partagé des rencontres, du business et de bons moments. Pourquoi perdre ce lien après ton départ du groupe ?
 
@@ -1730,33 +1706,120 @@ Au plaisir de te retrouver !
 
 Le groupe HUB – BIM
 """)
-            if copy_email and not msg.get("Cc"):msg["Cc"]=copy_email
-            port=int(os.getenv("SMTP_PORT","587"));user=os.getenv("SMTP_USER","").strip();password=os.getenv("SMTP_PASSWORD","")
-            use_ssl=os.getenv("SMTP_SSL","false").lower() in {"1","true","yes"}
+        if copy_email and not msg.get("Cc"):msg["Cc"]=copy_email
+        return msg
+
+    def invitation_delivery(msg,recipients,member_id,actor):
+        from copy import deepcopy
+        from email.utils import make_msgid,formatdate
+        results={kind:{"accepted":False,"error":None} for kind,_ in recipients}
+        host=os.getenv("SMTP_HOST","").strip();sender=os.getenv("SMTP_FROM","").strip()
+        if not host or not sender:
+            for item in results.values():item["error"]={"code":"MAIL_NOT_CONFIGURED","message":"Le serveur ou l’expéditeur mail du HUB n’est pas configuré."}
+        else:
             smtp=None
             try:
-                smtp=(smtplib.SMTP_SSL(host,port,timeout=15) if use_ssl else smtplib.SMTP(host,port,timeout=15))
+                port=int(os.getenv("SMTP_PORT","587"));use_ssl=os.getenv("SMTP_SSL","false").lower() in {"1","true","yes"}
+                smtp=smtplib.SMTP_SSL(host,port,timeout=15) if use_ssl else smtplib.SMTP(host,port,timeout=15)
                 if not use_ssl and os.getenv("SMTP_STARTTLS","true").lower() in {"1","true","yes"}:smtp.starttls()
-                if user:smtp.login(user,password)
-                # Explicit, independent SMTP envelopes expose copy refusals rather than hiding them.
-                for kind,recipient in [("member",member.email)]+([("copy",copy_email)] if copy_email else []):
-                    accepted=False
+                username=os.getenv("SMTP_USER","").strip()
+                if username:smtp.login(username,os.getenv("SMTP_PASSWORD",""))
+                for kind,recipient in recipients:
+                    outgoing=deepcopy(msg)
+                    if kind=="copy":
+                        outgoing.replace_header("To",recipient)
+                        if outgoing.get("Cc"):del outgoing["Cc"]
+                        outgoing.replace_header("Subject","Copie HUB — "+str(msg["Subject"]))
+                    if outgoing.get("Message-ID"):del outgoing["Message-ID"]
+                    outgoing["Message-ID"]=make_msgid(domain="bim-soignies.be")
+                    if not outgoing.get("Date"):outgoing["Date"]=formatdate(localtime=False)
                     try:
-                        refused=smtp.send_message(msg,to_addrs=[recipient])
-                        accepted=not bool(refused)
-                        if not accepted:app.logger.warning("Invitation SMTP recipient refused: member_id=%s recipient_kind=%s",member.id,kind)
-                    except Exception:
-                        app.logger.exception("Invitation SMTP delivery failed: member_id=%s recipient_kind=%s",member.id,kind)
-                    if kind=="member":email_sent=accepted
-                    else:copy_sent=accepted
-                    audit(inviter,"INVITATION_EMAIL_DELIVERY","member",member.id,f"recipient_kind={kind};smtp_accepted={accepted}")
-                db.session.commit()
+                        refused=smtp.send_message(outgoing,to_addrs=[recipient])
+                        if refused:raise smtplib.SMTPRecipientsRefused(refused)
+                        results[kind]["accepted"]=True
+                    except Exception as exc:results[kind]["error"]=invitation_smtp_error(exc)
             except Exception as exc:
-                app.logger.exception("Invitation email delivery failed for member %s: %s",member.id,exc)
+                error=invitation_smtp_error(exc)
+                for item in results.values():
+                    if not item["accepted"] and not item["error"]:item["error"]=error
             finally:
-                try:smtp.quit()
-                except Exception:pass
-        return {"status":"INVITED","activationUrl":activation_url,"expiresInHours":48,"emailSent":email_sent,"copyEmail":copy_email,"copyEmailSent":copy_sent}
+                if smtp:
+                    try:smtp.quit()
+                    except Exception:pass
+        for kind,result in results.items():
+            error=result["error"] or {}
+            audit(actor,"INVITATION_EMAIL_DELIVERY","member",member_id,f"recipient_kind={kind};smtp_accepted={result['accepted']};error_code={error.get('code','')};smtp_code={error.get('smtpCode','')}")
+            if error:app.logger.warning("HUB invitation failed member_id=%s recipient_kind=%s error_code=%s smtp_code=%s",member_id,kind,error.get("code"),error.get("smtpCode"))
+            if error.get("detail"):app.logger.warning("HUB copy refusal detail: %s",error["detail"])
+        db.session.commit()
+        return results
+
+    def invitation_smtp_error(exc):
+        import socket
+        if isinstance(exc,smtplib.SMTPRecipientsRefused):
+            codes=[int(v[0]) for v in exc.recipients.values()]
+            reply=next(iter(exc.recipients.values()))[1] if exc.recipients else ""
+            if isinstance(reply,bytes):reply=reply.decode("utf-8","replace")
+            return {"code":"RECIPIENT_REFUSED","smtpCode":codes[0] if codes else None,"message":"Le serveur mail a refusé l’adresse destinataire.","detail":" ".join(str(reply).split())[:240]}
+        if isinstance(exc,smtplib.SMTPAuthenticationError):return {"code":"SMTP_AUTH_FAILED","smtpCode":int(exc.smtp_code),"message":"L’authentification auprès du serveur mail a échoué."}
+        if isinstance(exc,smtplib.SMTPSenderRefused):return {"code":"SENDER_REFUSED","smtpCode":int(exc.smtp_code),"message":"Le serveur mail a refusé l’expéditeur configuré."}
+        if isinstance(exc,smtplib.SMTPResponseException):return {"code":"SMTP_REJECTED","smtpCode":int(exc.smtp_code),"message":"Le serveur mail a refusé le message."}
+        if isinstance(exc,(OSError,socket.timeout,smtplib.SMTPServerDisconnected)):return {"code":"SMTP_CONNECTION_FAILED","message":"La connexion au serveur mail a échoué ou a été interrompue."}
+        return {"code":"MAIL_DELIVERY_FAILED","message":"L’envoi du mail a échoué."}
+
+    @app.post("/api/system/mail-test")
+    def hub_mail_test():
+        actor,err=require_system_admin()
+        if err:return err
+        msg=EmailMessage();msg["From"]=os.getenv("SMTP_FROM","").strip();msg["To"]="hub@bim-soignies.be";msg["Subject"]="Test de réception HUB – BIM"
+        msg.set_content("Ce message teste uniquement la réception des copies sur hub@bim-soignies.be. Aucune invitation n’a été envoyée ou modifiée pour un membre.")
+        result=invitation_delivery(msg,[("copy","hub@bim-soignies.be")],actor.member_id,actor)["copy"]
+        return {"copyEmail":"hub@bim-soignies.be","copyEmailSent":result["accepted"],"copyEmailError":result["error"],"mailTest":True}
+
+    @app.post("/api/members/<int:member_id>/invite-copy")
+    def resend_invitation_copy(member_id):
+        actor,err=require_admin()
+        if err:return err
+        member=db.session.get(Member,member_id)
+        if not member:return {"error":"Membre introuvable."},404
+        membership=active_membership_for(member.id)
+        if not alumni_member(member) and not (membership and membership.status=="FORMER"):return {"error":"La copie HUB concerne les invitations des anciens."},400
+        account=member.user_account
+        if not account or account.status!="INVITED" or not account.invitation_token or not account.invitation_expires_at or account.invitation_expires_at<=datetime.utcnow():return {"error":"L’invitation n’est plus en attente ou son lien a expiré. Aucune copie envoyée."},409
+        url=f"{HUB_APP_URL}/?activate={account.invitation_token}"
+        message=invitation_message(member,url,"hub@bim-soignies.be")
+        result=invitation_delivery(message,[("copy","hub@bim-soignies.be")],member.id,actor)["copy"]
+        return {"copyEmail":"hub@bim-soignies.be","copyEmailSent":result["accepted"],"copyEmailError":result["error"],"activationUrl":url,"expiresInHours":max(1,int((account.invitation_expires_at-datetime.utcnow()).total_seconds()/3600))}
+
+    @app.post("/api/members/<int:member_id>/invite")
+    def invite_member(member_id):
+        inviter,auth_error=require_admin()
+        if auth_error:return auth_error
+        member=db.session.get(Member,member_id)
+        if not member:
+            return {"error":"Membre introuvable."},404
+        if not member.email:
+            return {"error":"Une adresse e-mail est nécessaire pour créer l'accès."},400
+        existing=UserAccount.query.filter(db.func.lower(UserAccount.email)==member.email.lower()).first()
+        if existing and existing.member_id!=member.id:
+            return {"error":"Cette adresse e-mail est déjà liée à un autre compte."},409
+        account=member.user_account or UserAccount(member_id=member.id,email=member.email.lower())
+        account.email=member.email.lower()
+        account.status="INVITED"
+        account.invitation_token=secrets.token_urlsafe(32)
+        account.invitation_expires_at=datetime.utcnow()+timedelta(hours=48)
+        if not account.id: db.session.add(account)
+        db.session.commit()
+        base=HUB_APP_URL
+        activation_url=f"{base}/?activate={account.invitation_token}"
+        email_sent=False
+        membership=active_membership_for(member.id)
+        copy_email="hub@bim-soignies.be" if alumni_member(member) or (membership and membership.status=="FORMER") else None
+        copy_sent=False if copy_email else None
+        message=invitation_message(member,activation_url,copy_email)
+        deliveries=invitation_delivery(message,[("member",member.email)]+([("copy",copy_email)] if copy_email else []),member.id,inviter)
+        primary=deliveries["member"];copied=deliveries.get("copy",{})
+        return {"status":"INVITED","activationUrl":activation_url,"expiresInHours":48,"emailSent":primary["accepted"],"emailError":primary["error"],"copyEmail":copy_email,"copyEmailSent":copied.get("accepted"),"copyEmailError":copied.get("error")}
 
     @app.post("/api/auth/forgot-password")
     def forgot_password():

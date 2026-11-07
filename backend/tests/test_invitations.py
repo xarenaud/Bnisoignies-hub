@@ -18,7 +18,7 @@ class InvitationTests(unittest.TestCase):
                 smtp.return_value.send_message.return_value={}
                 r=self.client.post(f'/api/members/{mid}/invite',headers=self.headers['admin'])
                 self.assertEqual(r.status_code,200,r.get_json());self.assertTrue(r.get_json()['emailSent'])
-                msg=smtp.return_value.send_message.call_args.args[0];body=msg.get_content()
+                msg=smtp.return_value.send_message.call_args_list[0].args[0];body=msg.get_content()
                 self.assertEqual(msg['To'],kind.lower()+'@example.test')
                 self.assertTrue(r.get_json()['activationUrl'].startswith('https://hub.bim-soignies.be/?activate='))
                 self.assertNotIn('cx-labs',body)
@@ -28,6 +28,8 @@ class InvitationTests(unittest.TestCase):
                     self.assertEqual(msg['Subject'],'Et si on gardait le lien ? Découvre le HUB des anciens')
                     self.assertEqual(msg['Cc'],'hub@bim-soignies.be')
                     self.assertTrue(r.get_json()['copyEmailSent'])
+                    copied=smtp.return_value.send_message.call_args_list[1].args[0]
+                    self.assertEqual(copied['To'],'hub@bim-soignies.be');self.assertIsNone(copied['Cc']);self.assertNotEqual(copied['Message-ID'],msg['Message-ID'])
                     self.assertEqual([call.kwargs['to_addrs'] for call in smtp.return_value.send_message.call_args_list],[[kind.lower()+'@example.test'],['hub@bim-soignies.be']])
                     self.assertIn('Bonjour ALUMNI,',body)
                     for text in ['HUB – BIM','SUPER SUPPLÉANT','ont choisi d’activer cette liaison','Aucune obligation','+32 473 531 656','Le groupe HUB – BIM',r.get_json()['activationUrl']]:self.assertIn(text,body)
@@ -101,3 +103,36 @@ class InvitationTests(unittest.TestCase):
             r=self.client.post(f'/api/members/{member.id}/invite',headers=self.headers['admin'])
             self.assertEqual(r.status_code,200);self.assertFalse(r.get_json()['emailSent']);self.assertTrue(r.get_json()['copyEmailSent'])
             self.assertEqual(smtp.return_value.send_message.call_count,2)
+
+    def test_retry_sends_only_hub_copy_and_preserves_invitation(self):
+        account=hub.UserAccount.query.filter_by(member_id=self.ids['off']).one();account.status='INVITED';account.invitation_token='preserved-fixture';account.invitation_expires_at=datetime.utcnow()+timedelta(hours=12);hub.db.session.commit()
+        with patch.dict(os.environ,{'SMTP_HOST':'smtp.example.test','SMTP_FROM':'hub@example.test','SMTP_USER':'','SMTP_SSL':'false'}),patch.object(hub.smtplib,'SMTP') as smtp:
+            smtp.return_value.send_message.return_value={}
+            r=self.client.post(f'/api/members/{self.ids["off"]}/invite-copy',headers=self.headers['admin'])
+            self.assertEqual(r.status_code,200,r.get_json());self.assertTrue(r.get_json()['copyEmailSent']);self.assertEqual(smtp.return_value.send_message.call_count,1)
+            call=smtp.return_value.send_message.call_args;self.assertEqual(call.kwargs['to_addrs'],['hub@bim-soignies.be']);self.assertEqual(call.args[0]['To'],'hub@bim-soignies.be')
+            self.assertIn('?activate=preserved-fixture',call.args[0].get_content());self.assertEqual(account.invitation_token,'preserved-fixture');self.assertEqual(account.status,'INVITED')
+            self.assertEqual(self.client.post(f'/api/members/{self.ids["off"]}/invite-copy',headers=self.headers['active']).status_code,403)
+    def test_copy_failure_has_precise_error_and_expired_invitation_is_not_recreated(self):
+        account=hub.UserAccount.query.filter_by(member_id=self.ids['off']).one();account.status='INVITED';account.invitation_token='same-fixture';account.invitation_expires_at=datetime.utcnow()+timedelta(hours=12);hub.db.session.commit()
+        with patch.dict(os.environ,{'SMTP_HOST':'smtp.example.test','SMTP_FROM':'hub@example.test','SMTP_USER':'','SMTP_SSL':'false'}),patch.object(hub.smtplib,'SMTP') as smtp,patch.object(hub.app.logger,'warning'):
+            smtp.return_value.send_message.return_value={'hub@bim-soignies.be':(550,b'Refused')}
+            r=self.client.post(f'/api/members/{self.ids["off"]}/invite-copy',headers=self.headers['admin'])
+            self.assertFalse(r.get_json()['copyEmailSent']);self.assertEqual(r.get_json()['copyEmailError']['smtpCode'],550);self.assertEqual(r.get_json()['copyEmailError']['code'],'RECIPIENT_REFUSED')
+            account.invitation_expires_at=datetime.utcnow()-timedelta(hours=1);hub.db.session.commit()
+            r=self.client.post(f'/api/members/{self.ids["off"]}/invite-copy',headers=self.headers['admin']);self.assertEqual(r.status_code,409)
+            self.assertEqual(smtp.return_value.send_message.call_count,1);self.assertEqual(account.invitation_token,'same-fixture')
+    def test_missing_mail_configuration_is_explicit_for_copy(self):
+        account=hub.UserAccount.query.filter_by(member_id=self.ids['off']).one();account.status='INVITED';account.invitation_token='same-fixture';account.invitation_expires_at=datetime.utcnow()+timedelta(hours=12);hub.db.session.commit()
+        with patch.dict(os.environ,{'SMTP_HOST':'','SMTP_FROM':''}),patch.object(hub.app.logger,'warning'):
+            r=self.client.post(f'/api/members/{self.ids["off"]}/invite-copy',headers=self.headers['admin'])
+            self.assertEqual(r.get_json()['copyEmailError']['code'],'MAIL_NOT_CONFIGURED');self.assertFalse(r.get_json()['copyEmailSent'])
+
+    def test_mail_test_targets_only_hub_and_hides_authentication_secret(self):
+        with patch.dict(os.environ,{'SMTP_HOST':'smtp.example.test','SMTP_FROM':'hub@example.test','SMTP_USER':'fixture-user','SMTP_SSL':'false'}),patch.object(hub.smtplib,'SMTP') as smtp,patch.object(hub.app.logger,'warning'):
+            smtp.return_value.send_message.return_value={}
+            r=self.client.post('/api/system/mail-test',headers=self.headers['admin']);self.assertEqual(r.status_code,200,r.get_json());self.assertTrue(r.get_json()['copyEmailSent'])
+            self.assertEqual(smtp.return_value.send_message.call_args.kwargs['to_addrs'],['hub@bim-soignies.be'])
+            self.assertEqual(self.client.post('/api/system/mail-test',headers=self.headers['active']).status_code,403)
+            smtp.return_value.login.side_effect=hub.smtplib.SMTPAuthenticationError(535,b'secret-from-server')
+            r=self.client.post('/api/system/mail-test',headers=self.headers['admin']);self.assertFalse(r.get_json()['copyEmailSent']);self.assertEqual(r.get_json()['copyEmailError']['code'],'SMTP_AUTH_FAILED');self.assertEqual(r.get_json()['copyEmailError']['smtpCode'],535);self.assertNotIn('secret-from-server',r.get_data(as_text=True))
