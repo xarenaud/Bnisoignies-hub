@@ -1,5 +1,8 @@
 import os, secrets, io, smtplib
 from email.message import EmailMessage
+
+# Canonical HUB origin: account tokens must never be linked to another application.
+HUB_APP_URL="https://hub.bim-soignies.be"
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 from flask import Flask, jsonify, request, send_file
@@ -396,7 +399,7 @@ def create_app():
     app.config["SQLALCHEMY_DATABASE_URI"]=database_url
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"]=False
     db.init_app(app)
-    CORS(app,origins=os.getenv("CORS_ORIGINS","https://cx-labs.be").split(","))
+    CORS(app,origins=os.getenv("CORS_ORIGINS",HUB_APP_URL).split(","))
 
     @app.get("/health")
     def health():
@@ -583,7 +586,7 @@ def create_app():
         try:
             member=db.session.get(Member,member_id)
             email=member.user_account.email if member.user_account else member.email
-            base=os.getenv("APP_URL","https://hub.bim-soignies.be").strip().rstrip("/") or "https://hub.bim-soignies.be"
+            base=HUB_APP_URL
             return send_simple_email(email,"HUB — "+title,f"Bonjour {member.first_name},\n\n{message}\n\nOuvre ton app pour consulter la suppléance :\n{base}/?substitutions=1\n")
         except Exception:
             app.logger.exception("Substitution email delivery failed")
@@ -752,7 +755,7 @@ def create_app():
             # Recipient only, after persistence; repeated acceptance is rejected above.
             target=db.session.get(Member,x.official_id)
             email=target.user_account.email if target.user_account else target.email
-            base=os.getenv("APP_URL","https://hub.bim-soignies.be").strip().rstrip("/") or "https://hub.bim-soignies.be"
+            base=HUB_APP_URL
             try:payload["emailSent"]=send_simple_email(email,"HUB — Suppléance confirmée",f"Bonjour {target.first_name},\n\n{confirmation}\n\nOuvre ton app pour consulter la suppléance :\n{base}/\n")
             except Exception:
                 app.logger.exception("Substitution confirmation email delivery failed")
@@ -1628,7 +1631,7 @@ def create_app():
         account.invitation_expires_at=datetime.utcnow()+timedelta(hours=48)
         if not account.id: db.session.add(account)
         db.session.commit()
-        base=os.getenv("APP_URL","https://hub.bim-soignies.be").rstrip("/")
+        base=HUB_APP_URL
         activation_url=f"{base}/?activate={account.invitation_token}"
         email_sent=False
         host=os.getenv("SMTP_HOST","").strip();sender=os.getenv("SMTP_FROM","").strip()
@@ -1739,7 +1742,7 @@ Le groupe HUB – BIM
             account.password_reset_token=secrets.token_urlsafe(32)
             account.password_reset_expires_at=datetime.utcnow()+timedelta(hours=1)
             db.session.commit()
-            base=os.getenv("APP_URL","https://hub.bim-soignies.be").rstrip("/")
+            base=HUB_APP_URL
             reset_url=f"{base}/?reset={account.password_reset_token}"
             host=os.getenv("SMTP_HOST","").strip();sender=os.getenv("SMTP_FROM","").strip()
             if host and sender:
@@ -2508,7 +2511,7 @@ Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet e-mai
             email=target.user_account.email if target.user_account else target.email
             if not email:return False
             name=f"{source.first_name} {source.last_name}"
-            link=os.getenv("APP_URL","https://hub.bim-soignies.be").strip().rstrip("/") or "https://hub.bim-soignies.be"
+            link=HUB_APP_URL
             body=f"Bonjour {target.first_name},\n\nLe membre {name} t'a fait {kind}.\nOuvre ton app pour consulter :\n{link}/?network={tab}\n"
             return send_simple_email(email,f"Hub — {name} : {kind}",body)
         except Exception:

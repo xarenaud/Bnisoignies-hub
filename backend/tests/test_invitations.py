@@ -14,12 +14,14 @@ class InvitationTests(unittest.TestCase):
         for kind,environment in [('BNI','MEMBERS'),('ALUMNI','ALUMNI')]:
             r=self.client.post('/api/members',headers=self.headers['admin'],json={'memberType':kind,'firstName':kind,'lastName':'Invitation','email':kind.lower()+'@example.test'})
             self.assertEqual(r.status_code,201);mid=r.get_json()['id']
-            with patch.dict(os.environ,{'SMTP_HOST':'smtp.example.test','SMTP_FROM':'hub@example.test','SMTP_USER':'','SMTP_SSL':'false','APP_URL':'https://hub.test'}),patch.object(hub.smtplib,'SMTP') as smtp:
+            with patch.dict(os.environ,{'SMTP_HOST':'smtp.example.test','SMTP_FROM':'hub@example.test','SMTP_USER':'','SMTP_SSL':'false','APP_URL':'https://cx-labs.be/Bnisoignies-hub'}),patch.object(hub.smtplib,'SMTP') as smtp:
                 r=self.client.post(f'/api/members/{mid}/invite',headers=self.headers['admin'])
                 self.assertEqual(r.status_code,200,r.get_json());self.assertTrue(r.get_json()['emailSent'])
                 msg=smtp.return_value.send_message.call_args.args[0];body=msg.get_content()
                 self.assertEqual(msg['To'],kind.lower()+'@example.test')
-                for text in ['Sur iPhone (Safari)','Sur Android (Google Chrome)','écran d’accueil','https://hub.test/','48 heures','non le lien personnel']:
+                self.assertTrue(r.get_json()['activationUrl'].startswith('https://hub.bim-soignies.be/?activate='))
+                self.assertNotIn('cx-labs',body)
+                for text in ['Sur iPhone (Safari)','Sur Android (Google Chrome)','écran d’accueil','https://hub.bim-soignies.be/','48 heures','non le lien personnel']:
                     self.assertIn(text,body)
                 if kind=='ALUMNI':
                     self.assertEqual(msg['Subject'],'Et si on gardait le lien ? Découvre le HUB des anciens')
@@ -47,13 +49,13 @@ class InvitationTests(unittest.TestCase):
         hub.db.session.add(availability);hub.db.session.flush()
         item=hub.AlumniSubstitution(official_id=self.ids['active'],alumni_id=self.ids['off'],availability_id=availability.id,date=day)
         hub.db.session.add(item);hub.db.session.commit();rid=item.id
-        with patch.dict(os.environ,{'SMTP_HOST':'smtp.example.test','SMTP_FROM':'hub@example.test','SMTP_USER':'','SMTP_SSL':'false','APP_URL':'https://hub.test'}),patch.object(hub.smtplib,'SMTP') as smtp:
+        with patch.dict(os.environ,{'SMTP_HOST':'smtp.example.test','SMTP_FROM':'hub@example.test','SMTP_USER':'','SMTP_SSL':'false','APP_URL':'https://cx-labs.be/Bnisoignies-hub'}),patch.object(hub.smtplib,'SMTP') as smtp:
             r=self.client.patch(f'/api/alumni-space/substitutions/{rid}',headers=self.headers['off'],json={'status':'ACCEPTED'})
             self.assertEqual(r.status_code,200,r.get_json());self.assertTrue(r.get_json()['emailSent'])
             msg=smtp.return_value.send_message.call_args.args[0]
             self.assertEqual(msg['To'],'active@example.test');self.assertIsNone(msg['Cc']);self.assertIsNone(msg['Bcc'])
             self.assertIn('off Test a accepté de remplacer active Test le '+day.isoformat()+'.',msg.get_content())
-            self.assertIn('https://hub.test/',msg.get_content())
+            self.assertIn('https://hub.bim-soignies.be/',msg.get_content())
             r=self.client.patch(f'/api/alumni-space/substitutions/{rid}',headers=self.headers['off'],json={'status':'ACCEPTED'})
             self.assertEqual(r.status_code,409);self.assertEqual(smtp.return_value.send_message.call_count,1)
     def test_smtp_failure_does_not_undo_confirmed_substitution(self):
@@ -67,3 +69,15 @@ class InvitationTests(unittest.TestCase):
             r=self.client.patch(f'/api/alumni-space/substitutions/{rid}',headers=self.headers['off'],json={'status':'ACCEPTED'})
             self.assertEqual(r.status_code,200);self.assertFalse(r.get_json()['emailSent'])
             self.assertEqual(hub.db.session.get(hub.AlumniSubstitution,rid).status,'ACCEPTED')
+    def test_reset_and_exchange_links_ignore_legacy_application_url(self):
+        with patch.dict(os.environ,{'SMTP_HOST':'smtp.example.test','SMTP_FROM':'hub@example.test','SMTP_USER':'','SMTP_SSL':'false','APP_URL':'https://cx-labs.be/Bnisoignies-hub'}),patch.object(hub.smtplib,'SMTP') as smtp:
+            r=self.client.post('/api/auth/forgot-password',json={'email':'active@example.test'})
+            self.assertEqual(r.status_code,200)
+            reset=smtp.return_value.send_message.call_args.args[0].get_content()
+            self.assertIn('https://hub.bim-soignies.be/?reset=',reset);self.assertNotIn('cx-labs',reset)
+            for path,payload in [('referrals',{'toMemberId':self.ids['off'],'contactName':'Contact de vérification'}),('business',{'creditedMemberId':self.ids['off'],'amount':25}),('one-to-ones',{'partnerMemberId':self.ids['off']})]:
+                r=self.client.post('/api/network/'+path,headers=self.headers['active'],json=payload)
+                self.assertEqual(r.status_code,201,r.get_json())
+                body=smtp.return_value.send_message.call_args.args[0].get_content()
+                self.assertIn('https://hub.bim-soignies.be/?network=',body);self.assertNotIn('cx-labs',body)
+            self.assertEqual(smtp.return_value.send_message.call_count,4)
