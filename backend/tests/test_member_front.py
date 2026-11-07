@@ -88,9 +88,10 @@ class MemberFrontTests(unittest.TestCase):
         self.assertEqual(profile['subscription']['startsAt'],date.today().isoformat())
 
     def test_mandate_boundaries_and_private_archive(self):
-        old=hub.Mandate(name='Passée',start_date=date.today()-timedelta(days=60),end_date=date.today()-timedelta(days=16))
+        today=datetime.now(hub.ZoneInfo('Europe/Brussels')).date()
+        old=hub.Mandate(name='Passée',start_date=today-timedelta(days=60),end_date=today-timedelta(days=16))
         hub.db.session.add(old);hub.db.session.flush()
-        for day,amount in [(old.start_date,10),(old.end_date,20),(date.today(),30),(date.today()+timedelta(days=1),40)]:
+        for day,amount in [(old.start_date,10),(old.end_date,20),(today,30),(today+timedelta(days=1),40)]:
             hub.db.session.add(hub.BusinessThanks(from_member_id=self.ids['off'],credited_member_id=self.ids['active'],amount=amount,business_date=day))
         hub.db.session.commit()
         current=self.client.get('/api/network/stats?months=24',headers=self.headers['active']).get_json()
