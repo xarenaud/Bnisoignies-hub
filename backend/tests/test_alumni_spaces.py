@@ -64,6 +64,36 @@ class AlumniSpacesTests(unittest.TestCase):
         self.assertIn(self.ids['active2'],names)
         self.assertEqual(self.bridge('off').status_code,403)
         self.assertEqual(self.client.put('/api/me/alumni-bridge',json={'enabled':True}).status_code,401)
+
+    def test_only_activated_accounts_can_receive_interactions(self):
+        self.bridge('active2')
+        for target in ['off2','active2']:
+            member=hub.db.session.get(hub.Member,self.ids[target])
+            account=member.user_account
+            for status in ['INVITED','DISABLED','SUSPENDED']:
+                account.status=status;hub.db.session.commit()
+                with self.subTest(target=target,status=status):
+                    ids=[m['id'] for m in self.get('/api/network/members','off').get_json()]
+                    self.assertNotIn(member.id,ids)
+                    self.encode_all('off',target,403)
+            account.status='ACTIVE';hub.db.session.commit()
+            self.assertIn(member.id,[m['id'] for m in self.get('/api/network/members','off').get_json()])
+            self.encode_all('off',target,201)
+
+        # Imported members with no account must also be absent and rejected.
+        self.add_member('unregistered','OFF','OFF')
+        member=hub.db.session.get(hub.Member,self.ids['unregistered'])
+        hub.AuthSession.query.filter_by(account_id=member.user_account.id).delete()
+        hub.db.session.delete(member.user_account);hub.db.session.commit()
+        self.assertNotIn(member.id,[m['id'] for m in self.get('/api/network/members','off').get_json()])
+        self.encode_all('off','unregistered',403)
+
+        # The same rule applies when an opted-in official targets an alumnus.
+        self.bridge('active')
+        hub.db.session.get(hub.Member,self.ids['off2']).user_account.status='INVITED'
+        hub.db.session.commit()
+        self.assertNotIn(self.ids['off2'],[m['id'] for m in self.get('/api/network/members','active').get_json()])
+        self.encode_all('active','off2',403)
     def test_alumni_cannot_read_official_space_even_with_old_board_role(self):
         mandate=hub.Mandate.query.first();role=hub.Role(name='Président');hub.db.session.add(role);hub.db.session.flush()
         hub.db.session.add(hub.RoleAssignment(member_id=self.ids['off'],role_id=role.id,mandate_id=mandate.id,status='ACTIVE'));hub.db.session.commit()

@@ -40,6 +40,19 @@ class SupportSessionsTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/auth/me',headers=headers).get_json()['member']['environment'],'ALUMNI')
         self.assertEqual(self.client.get('/api/meetings',headers=headers).status_code,403)
         self.assertEqual(self.client.get('/api/network/members',headers=headers).status_code,200)
+    def test_alumni_support_view_only_lists_activated_recipients(self):
+        pending=hub.Member(first_name='Pending',last_name='Alumnus',network_type='OFF')
+        hub.db.session.add(pending);hub.db.session.flush()
+        hub.db.session.add(hub.Membership(member_id=pending.id,status='OFF'))
+        account=hub.UserAccount(member_id=pending.id,email='pending@example.test',status='INVITED')
+        hub.db.session.add(account);hub.db.session.commit()
+        headers,_=self.delegated('off')
+        ids=[m['id'] for m in self.client.get('/api/network/members',headers=headers).get_json()]
+        self.assertNotIn(pending.id,ids)
+        self.assertIn(self.ids['active'],ids)
+        account.status='ACTIVE';hub.db.session.commit()
+        ids=[m['id'] for m in self.client.get('/api/network/members',headers=headers).get_json()]
+        self.assertIn(pending.id,ids)
     def test_expiry_or_revoked_parent_invalidates_support_only(self):
         headers,data=self.delegated();row=hub.AuthSession.query.filter_by(token_hash=hashlib.sha256(data['token'].encode()).hexdigest()).one();row.expires_at=datetime.utcnow()-timedelta(seconds=1);hub.db.session.commit()
         self.assertEqual(self.client.get('/api/auth/me',headers=headers).status_code,401)

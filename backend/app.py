@@ -933,7 +933,7 @@ def create_app():
         rows=Member.query.order_by(Member.last_name,Member.first_name).all()
         out=[]
         for m in rows:
-            membership=active_membership_for(m.id)
+            if not m.user_account or m.user_account.status!="ACTIVE":continue
             if not bridge_pair_allowed(account,m.id) and m.id!=account.member_id:continue
             out.append({"id":m.id,"name":f"{m.first_name} {m.last_name}","company":m.company,"activity":m.activity,"networkType":m.network_type or "OFFICIAL_BNI"})
         return jsonify(out)
@@ -941,6 +941,9 @@ def create_app():
     def bridge_pair_allowed(account,other_member_id):
         other=db.session.get(Member,other_member_id)
         if not other or other.id==account.member_id:return False
+        # A member record or pending invitation is not an activated HUB account.
+        # Keep the recipient list and all three encoding endpoints consistent.
+        if not other.user_account or other.user_account.status!="ACTIVE":return False
         own_alumni=alumni_member(account.member);other_alumni=alumni_member(other)
         own_opted=official_member(account.member) and account.member.alumni_bridge_enabled
         other_opted=official_member(other) and other.alumni_bridge_enabled
