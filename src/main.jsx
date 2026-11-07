@@ -1,3 +1,5 @@
+import {installUpdates} from './updates.js';
+if(import.meta.env.PROD)installUpdates({version:__HUB_BUILD_ID__});
 import React,{useEffect,useState}from'react';import{createRoot}from'react-dom/client';import{Home,CalendarDays,PlusCircle,BookOpen,UserRound,MapPin,Clock,Users,ArrowRight,Shield,Handshake,Mic2,Megaphone,GraduationCap,PartyPopper,Upload,Download,UserPlus,BriefcaseBusiness,Database,ChevronLeft,CheckCircle2,AlertTriangle,Bell,RefreshCw,CheckCircle,Mail,TrendingUp,Euro,BarChart3,Send,UserCheck}from'lucide-react';import'./style.css';
 
 const meetings=[
