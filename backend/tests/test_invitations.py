@@ -33,3 +33,28 @@ class InvitationTests(unittest.TestCase):
         account.invitation_token='expired-fixture';account.invitation_expires_at=datetime.utcnow()-timedelta(hours=1);hub.db.session.commit()
         r=self.client.post('/api/auth/activate',json={'token':'expired-fixture','password':'FixturePassword123'})
         self.assertEqual(r.status_code,400);self.assertIn('expiré',r.get_json()['error'])
+    def test_substitution_confirmation_names_both_members_and_only_emails_recipient_once(self):
+        day=datetime.utcnow().date()+timedelta(days=7)
+        availability=hub.AlumniAvailability(member_id=self.ids['off'],date=day)
+        hub.db.session.add(availability);hub.db.session.flush()
+        item=hub.AlumniSubstitution(official_id=self.ids['active'],alumni_id=self.ids['off'],availability_id=availability.id,date=day)
+        hub.db.session.add(item);hub.db.session.commit();rid=item.id
+        with patch.dict(os.environ,{'SMTP_HOST':'smtp.example.test','SMTP_FROM':'hub@example.test','SMTP_USER':'','SMTP_SSL':'false','APP_URL':'https://hub.test'}),patch.object(hub.smtplib,'SMTP') as smtp:
+            r=self.client.patch(f'/api/alumni-space/substitutions/{rid}',headers=self.headers['off'],json={'status':'ACCEPTED'})
+            self.assertEqual(r.status_code,200,r.get_json());self.assertTrue(r.get_json()['emailSent'])
+            msg=smtp.return_value.send_message.call_args.args[0]
+            self.assertEqual(msg['To'],'active@example.test');self.assertIsNone(msg['Cc']);self.assertIsNone(msg['Bcc'])
+            self.assertIn('off Test a accepté de remplacer active Test le '+day.isoformat()+'.',msg.get_content())
+            self.assertIn('https://hub.test/',msg.get_content())
+            r=self.client.patch(f'/api/alumni-space/substitutions/{rid}',headers=self.headers['off'],json={'status':'ACCEPTED'})
+            self.assertEqual(r.status_code,409);self.assertEqual(smtp.return_value.send_message.call_count,1)
+    def test_smtp_failure_does_not_undo_confirmed_substitution(self):
+        day=datetime.utcnow().date()+timedelta(days=7)
+        availability=hub.AlumniAvailability(member_id=self.ids['off'],date=day)
+        hub.db.session.add(availability);hub.db.session.flush()
+        item=hub.AlumniSubstitution(official_id=self.ids['active'],alumni_id=self.ids['off'],availability_id=availability.id,date=day)
+        hub.db.session.add(item);hub.db.session.commit();rid=item.id
+        with patch.dict(os.environ,{'SMTP_HOST':'smtp.example.test','SMTP_FROM':'hub@example.test','SMTP_SSL':'false'}),patch.object(hub.smtplib,'SMTP',side_effect=OSError('Simulated unavailable mail server')),patch.object(hub.app.logger,'exception'):
+            r=self.client.patch(f'/api/alumni-space/substitutions/{rid}',headers=self.headers['off'],json={'status':'ACCEPTED'})
+            self.assertEqual(r.status_code,200);self.assertFalse(r.get_json()['emailSent'])
+            self.assertEqual(hub.db.session.get(hub.AlumniSubstitution,rid).status,'ACCEPTED')

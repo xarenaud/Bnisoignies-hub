@@ -61,6 +61,7 @@ test('open replacement call notifies both alumni and only the first can commit',
  await f.click('Tester côté ancien');await f.click('Suppléances');await f.click('Je m’engage à assurer la suppléance');assert.ok(f.text().includes('Votre engagement est confirmé.'));assert.ok(f.text().includes('Ancien Test a accepté de remplacer Membre Test le 2099-02-05.'));
  await f.click('Tester un autre ancien');await f.click('Suppléances');assert.ok(f.text().includes('Prise en charge par Ancien Test'));assert.ok(!f.text().includes('Je m’engage à assurer la suppléance'));
  await f.click('Tester côté membre');f.w.document.querySelector('header button[title="Notifications"]').click();await wait();await wait();assert.ok(f.text().includes('Suppléance confirmée'));assert.ok(f.text().includes('Ancien Test a accepté de remplacer Membre Test le 2099-02-05.'));
+ await f.click('E-mails de test');assert.ok(f.text().includes('Boîte mail simulée · Membre Test'));assert.ok(f.text().includes('À : membre@example.test'));assert.ok(f.text().includes('HUB — Suppléance confirmée'));assert.ok(f.text().includes('Ancien Test a accepté de remplacer Membre Test le 2099-02-05.'));assert.ok(f.text().includes('https://hub.test/'));
  assert.equal(f.calls.filter(c=>c.method!=='GET').length,0);assert.deepEqual(f.errors,[]);
 }finally{f.close();}});
 test('two immediate acceptance attempts keep only the first commitment in demo',async()=>{

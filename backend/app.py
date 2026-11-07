@@ -623,9 +623,20 @@ def create_app():
             x.status=status
         else:return {"error":"Action non autorisée."},403
         other=x.official_id if account.member_id==x.alumni_id else x.alumni_id
-        notify(other,"SUBSTITUTION_RESPONSE","Suivi de suppléance",x.date.isoformat()+" : "+x.status,"substitutions")
+        confirmation=f"{member_name(x.alumni_id)} a accepté de remplacer {member_name(x.official_id)} le {x.date.isoformat()}."
+        notify(other,"SUBSTITUTION_RESPONSE","Suppléance confirmée" if status=="ACCEPTED" else "Suivi de suppléance",confirmation if status=="ACCEPTED" else x.date.isoformat()+" : "+x.status,"substitutions")
         audit(account,"ALUMNI_SUBSTITUTION_UPDATED","substitution",x.id,status);db.session.commit()
-        return substitution_payload(x)
+        payload=substitution_payload(x)
+        if status=="ACCEPTED":
+            # Recipient only, after persistence; repeated acceptance is rejected above.
+            target=db.session.get(Member,x.official_id)
+            email=target.user_account.email if target.user_account else target.email
+            base=os.getenv("APP_URL","https://hub.bim-soignies.be").strip().rstrip("/") or "https://hub.bim-soignies.be"
+            try:payload["emailSent"]=send_simple_email(email,"HUB — Suppléance confirmée",f"Bonjour {target.first_name},\n\n{confirmation}\n\nOuvre ton app pour consulter la suppléance :\n{base}/\n")
+            except Exception:
+                app.logger.exception("Substitution confirmation email delivery failed")
+                payload["emailSent"]=False
+        return payload
 
     def member_name(member_id):
         m=db.session.get(Member,member_id)

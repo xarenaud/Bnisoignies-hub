@@ -3,7 +3,7 @@ let session=null;
 const day=()=>new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Brussels'}).format(new Date());
 export function startPreview(admin){
  if(!admin?.isSystemAdmin)throw new Error('Aperçu réservé à l’administrateur système.');
- session={actor:'ALUMNI',bridge:false,referrals:[],business:[],otos:[],offers:[],requests:[],needs:[],notifications:[],seq:1};
+ session={actor:'ALUMNI',bridge:false,referrals:[],business:[],otos:[],offers:[],requests:[],needs:[],notifications:[],emails:[],seq:1};
 }
 export function stopPreview(){session=null;}
 export function selectPreviewActor(actor){if(session)session.actor=actor;}
@@ -12,6 +12,7 @@ export function previewUser(){
  const alumni=session.actor!=='MEMBERS',second=session.actor==='ALUMNI2';
  return {id:second?-3:alumni?-2:-1,isPreview:true,firstName:second?'Autre ancien':alumni?'Ancien':'Membre',lastName:'Test',company:'Entreprise de démonstration',email:second?'ancien2@example.test':alumni?'ancien@example.test':'membre@example.test',roles:[],isAdmin:false,isSystemAdmin:false,environment:alumni?'ALUMNI':'MEMBERS',networkType:alumni?'OFF':'OFFICIAL_BNI',alumniBridgeEnabled:!alumni&&session.bridge,networkModuleEnabled:alumni||session.bridge,networkAccessEnabled:alumni||session.bridge,networkBridgeEnabled:!alumni&&session.bridge};
 }
+export function previewEmails(){return session?session.emails.filter(x=>x.toId===previewUser().id):[];}
 const name=id=>Number(id)===-3?'Autre ancien Test':Number(id)===-2?'Ancien Test':'Membre Test';
 const result=(body,status=200)=>Promise.resolve({ok:status<400,status,json:async()=>JSON.parse(JSON.stringify(body))});
 export function hubFetch(url,options={}){
@@ -21,7 +22,10 @@ export function hubFetch(url,options={}){
  if(p==='/auth/me'&&(!options.method||options.method==='GET'))return globalThis.fetch(url,options);
  const method=options.method||'GET',u=previewUser(),id=u.id,alumni=u.environment==='ALUMNI',data=typeof options.body==='string'?JSON.parse(options.body):{};
  const fail=message=>result({error:message},403);
- const notify=(to,title,message='Message simulé — aucun e-mail envoyé.')=>s.notifications.push({id:s.seq++,to,title,message,createdAt:new Date().toISOString(),read:false});
+ const notify=(to,title,message='Message simulé — aucun e-mail envoyé.')=>{
+  s.notifications.push({id:s.seq++,to,title,message,createdAt:new Date().toISOString(),read:false});
+  s.emails.push({id:s.seq++,toId:to,to:to===-1?'membre@example.test':to===-2?'ancien@example.test':'ancien2@example.test',subject:'HUB — '+title,body:'Bonjour '+name(to)+',\n\n'+message+'\n\nOuvre ton app pour consulter :\n'+location.origin+'/'});
+ };
  const stats=()=>({mandate:'Parcours de test',referralsGiven:s.referrals.filter(x=>x.fromMemberId===id).length,referralsReceived:s.referrals.filter(x=>x.toMemberId===id).length,oneToOnes:s.otos.filter(x=>x.fromMemberId===id||x.partnerMemberId===id).length,businessGenerated:s.business.filter(x=>x.creditedMemberId===id).reduce((a,x)=>a+x.amount,0),businessReceived:s.business.filter(x=>x.fromMemberId===id).reduce((a,x)=>a+x.amount,0)});
  const pair=target=>{target=Number(target);return target!==id&&[-1,-2,-3].includes(target)&&((id!==-1&&target!==-1)||s.bridge);};
  if(p==='/me/alumni-bridge'&&method==='PUT'){

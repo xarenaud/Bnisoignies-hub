@@ -57,3 +57,13 @@ Les routes `/alumni-space/replacement-needs` sont simulées uniquement dans
 créé sur le serveur de production. Les tests couvrent aussi deux tentatives
 immédiates d’acceptation. Une future mise en production nécessitera son propre
 verrouillage transactionnel en base et des contrôles sur la réunion réelle.
+
+### E-mails de confirmation
+
+Lorsqu’une demande ciblée réelle est acceptée, le serveur envoie après validation
+un e-mail uniquement au membre remplacé : nom de l’ancien, nom du membre remplacé,
+date et lien HUB. Une deuxième acceptation est rejetée et ne renvoie pas le mail.
+Une panne SMTP ne revient pas sur un engagement déjà enregistré.
+Dans le mode test, les notifications génèrent des e-mails simulés consultables
+avec « E-mails de test » pour le participant sélectionné ; ils ne quittent pas
+le navigateur. Cela couvre aussi l’appel ouvert, toujours limité au simulateur.
