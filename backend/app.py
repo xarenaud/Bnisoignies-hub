@@ -636,6 +636,16 @@ def create_app():
         account=m.user_account
         return {"id":m.id,"firstName":m.first_name,"lastName":m.last_name,"company":m.company,"activity":m.activity,"email":m.email,"phone":m.phone,"networkType":m.network_type or "OFFICIAL_BNI","networkAccessEnabled":bool(m.network_access_enabled),"status":membership.status if membership else None,"startDate":membership.start_date.isoformat() if membership and membership.start_date else None,"endDate":membership.end_date.isoformat() if membership and membership.end_date else None,"alumniRequestedAt":m.alumni_requested_at.isoformat() if m.alumni_requested_at else None,"accountStatus":account.status if account else "NO_ACCOUNT","isSystemAdmin":bool(account and account.is_system_admin)}
 
+    def member_entry_type(data):
+        kind=data.get("memberType")
+        if kind is None:
+            kind="ALUMNI" if data.get("networkType")=="OFF" or data.get("status")=="OFF" else "BNI"
+        if kind not in {"BNI","ALUMNI"}:return None,"Choisir Membre BNI ou Ancien membre."
+        allowed={"OFF"} if kind=="ALUMNI" else {"ACTIVE","ONBOARDING"}
+        if data.get("status") and data["status"] not in allowed:return None,"Le statut ne correspond pas au type de membre choisi."
+        if data.get("networkType") and data["networkType"]!=("OFF" if kind=="ALUMNI" else "OFFICIAL_BNI"):return None,"Le réseau ne correspond pas au type de membre choisi."
+        return kind,None
+
     @app.route("/api/members",methods=["GET","POST"])
     def members():
         _,auth_error=require_admin()
@@ -652,16 +662,12 @@ def create_app():
                 return {"error":"Un membre avec ce prénom et ce nom existe déjà.","duplicateId":duplicate.id},409
             if email and Member.query.filter(db.func.lower(Member.email)==email.lower()).first():
                 return {"error":"Un membre avec cet e-mail existe déjà."},409
-            network_type=(data.get("networkType") or "OFFICIAL_BNI").strip().upper()
-            if network_type not in {"OFFICIAL_BNI","OFF","TRANSITION"}:return {"error":"Type de réseau invalide."},400
-            member=Member(first_name=first,last_name=last,company=(data.get("company") or "").strip() or None,activity=(data.get("activity") or "").strip() or None,email=email,phone=(data.get("phone") or "").strip() or None,network_type=network_type,network_access_enabled=bool(data.get("networkAccessEnabled",False)))
+            kind,error=member_entry_type(data)
+            if error:return {"error":error},400
+            member=Member(first_name=first,last_name=last,company=(data.get("company") or "").strip() or None,activity=(data.get("activity") or "").strip() or None,email=email.lower() if email else None,phone=(data.get("phone") or "").strip() or None,network_type="OFF" if kind=="ALUMNI" else "OFFICIAL_BNI",network_access_enabled=kind=="ALUMNI",alumni_bridge_enabled=False)
             db.session.add(member)
             db.session.flush()
-            member_status=(data.get("status") or "ACTIVE").strip().upper()
-            if member_status not in {"ACTIVE","ONBOARDING","FORMER","OFF"}:return {"error":"Statut membre invalide."},400
-            if member_status=="OFF":
-                member.network_type="OFF"
-                member.network_access_enabled=True
+            member_status="OFF" if kind=="ALUMNI" else ("ONBOARDING" if data.get("status")=="ONBOARDING" else "ACTIVE")
             membership=Membership(member_id=member.id,start_date=date.today(),status=member_status)
             db.session.add(membership)
             db.session.add(MemberNetworkHistory(member_id=member.id,network_type=member.network_type,start_date=date.today()))
@@ -1364,45 +1370,88 @@ def create_app():
             preview.append(data)
         return preview,[{"column":headers[i],"field":key} for i,key in mapping.items()],errors
 
+    def validate_member_import(rows,kind):
+        errors=[];seen=set();emails=set();resolved=[]
+        for n,item in enumerate(rows,start=2):
+            if not isinstance(item,dict):errors.append(f"Ligne {n}: données invalides.");continue
+            first=str(item.get("firstName") or "").strip();last=str(item.get("lastName") or "").strip()
+            label=f"Ligne {item.get('row',n)}"
+            key=(first.casefold(),last.casefold());email=str(item.get("email") or "").strip().lower()
+            if not first or not last:errors.append(f"{label}: prénom et nom obligatoires.");continue
+            if key in seen or (email and email in emails):errors.append(f"{label}: doublon dans le fichier.");continue
+            seen.add(key)
+            if email:emails.add(email)
+            matches=Member.query.filter(db.func.lower(Member.first_name)==first.lower(),db.func.lower(Member.last_name)==last.lower()).all()
+            if len(matches)>1:errors.append(f"{label}: plusieurs homonymes, modifier leur fiche individuellement.");continue
+            member=matches[0] if matches else None
+            if member and ((kind=="ALUMNI" and official_member(member)) or (kind=="BNI" and alumni_member(member))):
+                errors.append(f"{label}: {first} {last} appartient à l’autre espace. Utiliser le parcours de basculement.");continue
+            if email:
+                other=Member.query.filter(db.func.lower(Member.email)==email).first()
+                account=UserAccount.query.filter(db.func.lower(UserAccount.email)==email).first()
+                if (other and (not member or other.id!=member.id)) or (account and (not member or account.member_id!=member.id)):
+                    errors.append(f"{label}: e-mail déjà utilisé par un autre membre.");continue
+                if member and member.user_account and member.user_account.email.lower()!=email:
+                    errors.append(f"{label}: modifier l’e-mail du compte depuis sa fiche membre.");continue
+            if item.get("startDate"):
+                try:date.fromisoformat(str(item["startDate"])[:10])
+                except ValueError:errors.append(f"{label}: date d’entrée invalide.");continue
+            expected={"OFF"} if kind=="ALUMNI" else {"ACTIVE","ONBOARDING"}
+            if item.get("status") and str(item["status"]).upper() not in expected:
+                errors.append(f"{label}: statut incompatible avec l’espace choisi.");continue
+            resolved.append(({**item,"firstName":first,"lastName":last,"email":email,"action":"UPDATE" if member else "CREATE","existingId":member.id if member else None},member))
+        return resolved,errors
+
     @app.post("/api/members/import/preview")
     def import_members_preview():
         _,auth_error=require_system_admin()
         if auth_error:return auth_error
+        kind=request.form.get("memberType","BNI")
+        if kind not in {"BNI","ALUMNI"}:return {"error":"Type de membre invalide."},400
         file=request.files.get("file")
         if not file or not file.filename.lower().endswith(".xlsx"):return {"error":"Fichier .xlsx requis."},400
         try: preview,mapping,errors=parse_member_excel(file)
         except Exception:return {"error":"Impossible de lire ce fichier Excel."},400
-        return {"rows":preview,"mapping":mapping,"errors":errors,"summary":{"total":len(preview),"create":sum(x["action"]=="CREATE" for x in preview),"update":sum(x["action"]=="UPDATE" for x in preview)}}
+        resolved,validation_errors=validate_member_import(preview,kind)
+        errors+=validation_errors
+        preview=[item for item,_ in resolved]
+        return {"memberType":kind,"rows":preview,"mapping":mapping,"errors":errors,"summary":{"total":len(preview),"create":sum(x["action"]=="CREATE" for x in preview),"update":sum(x["action"]=="UPDATE" for x in preview)}}
 
     @app.post("/api/members/import/confirm")
     def import_members_confirm():
         _,auth_error=require_system_admin()
         if auth_error:return auth_error
         data=request.get_json(silent=True) or {}
-        rows=data.get("rows") or []
+        kind=data.get("memberType","BNI")
+        if kind not in {"BNI","ALUMNI"}:return {"error":"Type de membre invalide."},400
+        rows=data.get("rows")
+        if not isinstance(rows,list) or not rows:return {"error":"Aucune ligne à importer."},400
+        resolved,errors=validate_member_import(rows,kind)
+        if errors:return {"error":" ".join(errors),"errors":errors},400
         created=updated=0
-        for item in rows:
-            first=(item.get("firstName") or "").strip();last=(item.get("lastName") or "").strip()
-            if not first or not last:continue
-            member=Member.query.filter(db.func.lower(Member.first_name)==first.lower(),db.func.lower(Member.last_name)==last.lower()).first()
+        for item,member in resolved:
             if member:updated+=1
             else:
-                member=Member(first_name=first,last_name=last);db.session.add(member);db.session.flush();created+=1
+                member=Member(first_name=item["firstName"],last_name=item["lastName"],alumni_bridge_enabled=False)
+                db.session.add(member);db.session.flush();created+=1
             for key,attr in [("company","company"),("activity","activity"),("email","email"),("phone","phone")]:
                 if item.get(key):setattr(member,attr,str(item[key]).strip())
-            membership=Membership.query.filter_by(member_id=member.id).order_by(Membership.id.desc()).first()
-            if not membership:membership=Membership(member_id=member.id,status="ACTIVE");db.session.add(membership)
-            if item.get("startDate"):
-                try:membership.start_date=date.fromisoformat(str(item["startDate"])[:10])
-                except ValueError:pass
-            status=(item.get("status") or "").strip().upper()
-            if status in {"ACTIVE","ONBOARDING","FORMER","OFF"}:
-                membership.status=status
-                if status=="OFF":
-                    member.network_type="OFF"
-                    member.network_access_enabled=True
+            membership=active_membership_for(member.id)
+            target="OFF" if kind=="ALUMNI" else "ACTIVE"
+            if not membership or membership.status=="FORMER":
+                membership=Membership(member_id=member.id,status=target,start_date=date.today());db.session.add(membership)
+            if kind=="ALUMNI":membership.status="OFF"
+            elif item.get("status"):membership.status=str(item["status"]).upper()
+            if item.get("startDate"):membership.start_date=date.fromisoformat(str(item["startDate"])[:10])
+            network="OFF" if kind=="ALUMNI" else "OFFICIAL_BNI"
+            current=MemberNetworkHistory.query.filter_by(member_id=member.id,end_date=None).order_by(MemberNetworkHistory.id.desc()).first()
+            if not current or current.network_type!=network:
+                if current:current.end_date=date.today()-timedelta(days=1)
+                db.session.add(MemberNetworkHistory(member_id=member.id,network_type=network,start_date=date.today()))
+            member.network_type=network
+            if kind=="ALUMNI":member.network_access_enabled=True;member.alumni_bridge_enabled=False
         account,_=bearer_account()
-        log=ImportLog(account_id=account.id,filename=(data.get("filename") or "import.xlsx")[:255],created_count=created,updated_count=updated,error_count=0)
+        log=ImportLog(account_id=account.id,filename=(("Anciens · " if kind=="ALUMNI" else "Membres BNI · ")+(data.get("filename") or "import.xlsx"))[:255],created_count=created,updated_count=updated,error_count=0)
         db.session.add(log)
         db.session.commit()
         return {"status":"ok","created":created,"updated":updated}

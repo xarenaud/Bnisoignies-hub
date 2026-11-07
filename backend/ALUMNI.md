@@ -15,3 +15,15 @@ One application and identity, with server-enforced spaces. No data is deleted by
 - Incoming lists of alumni e-mails can use existing member creation (status OFF) and individual invitation actions. This release sends no bulk invitations.
 
 Checks: `python -m unittest discover -s backend/tests -q` and `node --test tests/updates.test.mjs tests/alumni-ui.test.cjs`.
+
+## Création et imports administratifs
+
+Dans Administration → Membres, la création à l’unité et les deux imports Excel
+partagent le choix `memberType`: `BNI` ou `ALUMNI`. Le serveur impose respectivement
+`OFFICIAL_BNI` + `ACTIVE` (ou `ONBOARDING`) et `OFF` + `OFF`, sans consentement
+implicite à la liaison personnelle. Le compte ouvre donc l’espace correspondant.
+Nom et prénom sont obligatoires ; l’e-mail est facultatif pour créer la fiche.
+Créer/importer ne crée pas de compte et n’envoie aucune invitation automatiquement.
+L’import présente un aperçu, bloque les doublons et les changements d’espace
+involontaires, puis revalide tout le lot avant toute écriture. Les anciens déjà
+archivés conservent leur identifiant et leurs anciennes adhésions.
