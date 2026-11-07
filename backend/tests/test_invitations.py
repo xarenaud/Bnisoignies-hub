@@ -15,6 +15,7 @@ class InvitationTests(unittest.TestCase):
             r=self.client.post('/api/members',headers=self.headers['admin'],json={'memberType':kind,'firstName':kind,'lastName':'Invitation','email':kind.lower()+'@example.test'})
             self.assertEqual(r.status_code,201);mid=r.get_json()['id']
             with patch.dict(os.environ,{'SMTP_HOST':'smtp.example.test','SMTP_FROM':'hub@example.test','SMTP_USER':'','SMTP_SSL':'false','APP_URL':'https://cx-labs.be/Bnisoignies-hub'}),patch.object(hub.smtplib,'SMTP') as smtp:
+                smtp.return_value.send_message.return_value={}
                 r=self.client.post(f'/api/members/{mid}/invite',headers=self.headers['admin'])
                 self.assertEqual(r.status_code,200,r.get_json());self.assertTrue(r.get_json()['emailSent'])
                 msg=smtp.return_value.send_message.call_args.args[0];body=msg.get_content()
@@ -26,6 +27,8 @@ class InvitationTests(unittest.TestCase):
                 if kind=='ALUMNI':
                     self.assertEqual(msg['Subject'],'Et si on gardait le lien ? Découvre le HUB des anciens')
                     self.assertEqual(msg['Cc'],'hub@bim-soignies.be')
+                    self.assertTrue(r.get_json()['copyEmailSent'])
+                    self.assertEqual([call.kwargs['to_addrs'] for call in smtp.return_value.send_message.call_args_list],[[kind.lower()+'@example.test'],['hub@bim-soignies.be']])
                     self.assertIn('Bonjour ALUMNI,',body)
                     for text in ['HUB – BIM','SUPER SUPPLÉANT','ont choisi d’activer cette liaison','Aucune obligation','+32 473 531 656','Le groupe HUB – BIM',r.get_json()['activationUrl']]:self.assertIn(text,body)
                     self.assertNotIn('BOM',body)
@@ -81,3 +84,20 @@ class InvitationTests(unittest.TestCase):
                 body=smtp.return_value.send_message.call_args.args[0].get_content()
                 self.assertIn('https://hub.bim-soignies.be/?network=',body);self.assertNotIn('cx-labs',body)
             self.assertEqual(smtp.return_value.send_message.call_count,4)
+
+    def test_archived_alumni_copy_is_sent_and_refusal_reported_separately(self):
+        member=hub.db.session.get(hub.Member,self.ids['former']);member.email='former@example.test';hub.db.session.commit()
+        with patch.dict(os.environ,{'SMTP_HOST':'smtp.example.test','SMTP_FROM':'hub@example.test','SMTP_USER':'','SMTP_SSL':'false'}),patch.object(hub.smtplib,'SMTP') as smtp,patch.object(hub.app.logger,'warning'):
+            smtp.return_value.send_message.side_effect=[{}, {'hub@bim-soignies.be':(550,b'Recipient refused')}]
+            r=self.client.post(f'/api/members/{member.id}/invite',headers=self.headers['admin'])
+            self.assertEqual(r.status_code,200,r.get_json());data=r.get_json()
+            self.assertTrue(data['emailSent']);self.assertFalse(data['copyEmailSent']);self.assertEqual(data['copyEmail'],'hub@bim-soignies.be')
+            self.assertEqual([c.kwargs['to_addrs'] for c in smtp.return_value.send_message.call_args_list],[['former@example.test'],['hub@bim-soignies.be']])
+            self.assertEqual(hub.Membership.query.filter_by(member_id=member.id).first().status,'FORMER')
+    def test_member_refusal_does_not_prevent_hub_copy_attempt(self):
+        member=hub.db.session.get(hub.Member,self.ids['off']);member.email='off@example.test';hub.db.session.commit()
+        with patch.dict(os.environ,{'SMTP_HOST':'smtp.example.test','SMTP_FROM':'hub@example.test','SMTP_USER':'','SMTP_SSL':'false'}),patch.object(hub.smtplib,'SMTP') as smtp,patch.object(hub.app.logger,'exception'):
+            smtp.return_value.send_message.side_effect=[hub.smtplib.SMTPRecipientsRefused({'off@example.test':(550,b'Refused')}),{}]
+            r=self.client.post(f'/api/members/{member.id}/invite',headers=self.headers['admin'])
+            self.assertEqual(r.status_code,200);self.assertFalse(r.get_json()['emailSent']);self.assertTrue(r.get_json()['copyEmailSent'])
+            self.assertEqual(smtp.return_value.send_message.call_count,2)

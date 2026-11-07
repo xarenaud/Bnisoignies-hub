@@ -74,3 +74,22 @@ avec le prénom, le lien d’activation personnel valable 48 h, le tutoriel iPho
 les contacts et la signature HUB – BIM. `hub@bim-soignies.be` est en copie (Cc).
 Les nouveaux membres BNI conservent leur modèle distinct, sans cette copie.
 Le déploiement ne renvoie pas les invitations précédentes et ne lance aucun lot.
+
+## Sessions et statut des copies
+
+Les sessions durent 90 jours. `GET /auth/me` prolonge une session valide à 90 jours
+au maximum une fois par jour, et met aussi à niveau les anciennes sessions valides.
+Les sessions expirées ou révoquées ne sont pas réactivées. Logout et changement
+de mot de passe conservent leurs mécanismes de révocation. L’interface ne supprime
+le jeton qu’en cas de réponse 401 ; une panne réseau ou une erreur serveur conserve
+la session et propose de réessayer. Les réponses d’une ancienne session ne doivent
+pas effacer un nouveau jeton.
+
+Les copies d’invitations couvrent les anciens admis et les fiches archivées FORMER.
+Elles gardent l’en-tête Cc mais sont transmises dans une enveloppe SMTP séparée,
+explicitement adressée à hub@bim-soignies.be. Le statut de l’invitation et celui de
+la copie sont suivis indépendamment (`emailSent`, `copyEmailSent`) et présentés
+dans l’administration. Les acceptations/refus sont inscrits au journal d’audit
+sans stocker le contenu du message ni son jeton. SMTP accepté ne prouve pas une
+réception dans la boîte principale : le classement, les quarantaines et les
+rejets ultérieurs restent à vérifier sur le serveur de messagerie.

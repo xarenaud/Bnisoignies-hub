@@ -3,6 +3,7 @@ from email.message import EmailMessage
 
 # Canonical HUB origin: account tokens must never be linked to another application.
 HUB_APP_URL="https://hub.bim-soignies.be"
+SESSION_DAYS=90
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 from flask import Flask, jsonify, request, send_file
@@ -1614,7 +1615,7 @@ def create_app():
 
     @app.post("/api/members/<int:member_id>/invite")
     def invite_member(member_id):
-        _,auth_error=require_admin()
+        inviter,auth_error=require_admin()
         if auth_error:return auth_error
         member=db.session.get(Member,member_id)
         if not member:
@@ -1634,6 +1635,9 @@ def create_app():
         base=HUB_APP_URL
         activation_url=f"{base}/?activate={account.invitation_token}"
         email_sent=False
+        membership=active_membership_for(member.id)
+        copy_email="hub@bim-soignies.be" if alumni_member(member) or (membership and membership.status=="FORMER") else None
+        copy_sent=False if copy_email else None
         host=os.getenv("SMTP_HOST","").strip();sender=os.getenv("SMTP_FROM","").strip()
         if host and sender:
             msg=EmailMessage()
@@ -1718,6 +1722,7 @@ Au plaisir de te retrouver !
 
 Le groupe HUB – BIM
 """)
+            if copy_email and not msg.get("Cc"):msg["Cc"]=copy_email
             port=int(os.getenv("SMTP_PORT","587"));user=os.getenv("SMTP_USER","").strip();password=os.getenv("SMTP_PASSWORD","")
             use_ssl=os.getenv("SMTP_SSL","false").lower() in {"1","true","yes"}
             smtp=None
@@ -1725,13 +1730,25 @@ Le groupe HUB – BIM
                 smtp=(smtplib.SMTP_SSL(host,port,timeout=15) if use_ssl else smtplib.SMTP(host,port,timeout=15))
                 if not use_ssl and os.getenv("SMTP_STARTTLS","true").lower() in {"1","true","yes"}:smtp.starttls()
                 if user:smtp.login(user,password)
-                smtp.send_message(msg);email_sent=True
+                # Explicit, independent SMTP envelopes expose copy refusals rather than hiding them.
+                for kind,recipient in [("member",member.email)]+([("copy",copy_email)] if copy_email else []):
+                    accepted=False
+                    try:
+                        refused=smtp.send_message(msg,to_addrs=[recipient])
+                        accepted=not bool(refused)
+                        if not accepted:app.logger.warning("Invitation SMTP recipient refused: member_id=%s recipient_kind=%s",member.id,kind)
+                    except Exception:
+                        app.logger.exception("Invitation SMTP delivery failed: member_id=%s recipient_kind=%s",member.id,kind)
+                    if kind=="member":email_sent=accepted
+                    else:copy_sent=accepted
+                    audit(inviter,"INVITATION_EMAIL_DELIVERY","member",member.id,f"recipient_kind={kind};smtp_accepted={accepted}")
+                db.session.commit()
             except Exception as exc:
                 app.logger.exception("Invitation email delivery failed for member %s: %s",member.id,exc)
             finally:
                 try:smtp.quit()
                 except Exception:pass
-        return {"status":"INVITED","activationUrl":activation_url,"expiresInHours":48,"emailSent":email_sent}
+        return {"status":"INVITED","activationUrl":activation_url,"expiresInHours":48,"emailSent":email_sent,"copyEmail":copy_email,"copyEmailSent":copy_sent}
 
     @app.post("/api/auth/forgot-password")
     def forgot_password():
@@ -1841,15 +1858,20 @@ Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet e-mai
             return {"error":"Identifiants incorrects."},401
         raw=secrets.token_urlsafe(48)
         import hashlib
-        session=AuthSession(account_id=account.id,token_hash=hashlib.sha256(raw.encode()).hexdigest(),expires_at=datetime.utcnow()+timedelta(days=7))
+        session=AuthSession(account_id=account.id,token_hash=hashlib.sha256(raw.encode()).hexdigest(),expires_at=datetime.utcnow()+timedelta(days=SESSION_DAYS))
         db.session.add(session);db.session.commit()
-        return {"token":raw,"expiresInDays":7,"member":account_payload(account)}
+        return {"token":raw,"expiresInDays":SESSION_DAYS,"member":account_payload(account)}
 
     @app.get("/api/auth/me")
     def me():
-        account,_=bearer_account()
+        account,session=bearer_account()
         if not account:return {"error":"Session invalide ou expirée."},401
-        return {"member":account_payload(account)}
+        now=datetime.utcnow()
+        # Extend only here, before application writes; existing valid sessions are upgraded too.
+        if session.expires_at<now+timedelta(days=SESSION_DAYS-1):
+            session.expires_at=now+timedelta(days=SESSION_DAYS)
+            db.session.commit()
+        return {"member":account_payload(account),"expiresInDays":SESSION_DAYS,"expiresAt":session.expires_at.isoformat()+"Z"}
 
     @app.post("/api/auth/logout")
     def logout():
