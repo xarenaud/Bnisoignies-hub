@@ -55,3 +55,10 @@ test('network failures and server errors preserve the logged-in session; 401 cle
 }finally{f.close();}});
 
 test('an offline app restart keeps its token and retries instead of asking for credentials',async()=>{const f=await mount('MEMBERS',false,'https://hub.test/',true);try{assert.equal(f.w.localStorage.getItem('bni_token'),'fixture');assert.ok(f.text().includes('Votre session est conservée.'));assert.ok(!f.w.document.querySelector('input[name="email"]'));const normal=f.w.fetch;f.w.fetch=async(url,options)=>url.endsWith('/auth/me')?{ok:true,json:async()=>({member:{id:1,firstName:'Test',lastName:'Membre',environment:'MEMBERS',roles:[]}})}:normal(url,options);await f.click('Réessayer la connexion');assert.ok(f.w.document.querySelector('nav'));assert.equal(f.w.localStorage.getItem('bni_token'),'fixture');assert.deepEqual(f.errors,[]);}finally{f.close();}});
+test('personal bridge stays visible for every active role when secondary profile loading fails',async()=>{
+ for(const admin of [false,true]){const f=await mount('MEMBERS',admin);try{
+  const normal=f.w.fetch;f.w.fetch=async(url,options)=>url.endsWith('/alumni-space/me')?Promise.reject(new Error('temporary failure')):normal(url,options);
+  await f.click('Profil');assert.ok(f.text().includes('Liaison personnelle avec les anciens'));assert.ok(f.text().includes('J’active personnellement ma liaison'));assert.ok(f.text().includes('Actualiser la liaison'));
+  f.w.fetch=normal;await f.click('J’active personnellement ma liaison');assert.ok(f.text().includes('Désactiver ma liaison'));assert.deepEqual(f.errors,[]);
+ }finally{f.close();}}
+});

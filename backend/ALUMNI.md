@@ -93,3 +93,15 @@ dans l’administration. Les acceptations/refus sont inscrits au journal d’aud
 sans stocker le contenu du message ni son jeton. SMTP accepté ne prouve pas une
 réception dans la boîte principale : le classement, les quarantaines et les
 rejets ultérieurs restent à vérifier sur le serveur de messagerie.
+
+## Visibilité de la liaison pour les membres
+
+Le bloc Profil initialise sa visibilité à partir de l’environnement déjà
+validé par `/auth/me`. Un échec du chargement complémentaire `/alumni-space/me`
+ne masque plus le bouton d’activation d’un membre actif. Une actualisation est
+proposée en cas d’erreur ; les autorisations restent vérifiées par le serveur.
+L’annuaire d’administration expose pour chaque fiche l’environnement effectif,
+la possibilité d’activer la liaison et son état choisi par le membre. Il
+distingue les actifs/en intégration (choix personnel disponible), les anciens
+admis (interface Anciens directe) et les fiches archivées hors groupe.
+Aucun consentement n’est activé automatiquement par cette vérification.

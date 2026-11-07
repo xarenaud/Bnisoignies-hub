@@ -136,4 +136,19 @@ class AlumniSpacesTests(unittest.TestCase):
         self.bridge(enabled=False)
         self.assertEqual(self.client.patch(f'/api/alumni-space/substitutions/{rid}',headers=self.headers['off'],json={'status':'ACCEPTED'}).status_code,403)
 
+    def test_bridge_visibility_and_admin_diagnostics_for_every_membership_type(self):
+        # Same personal choice for ordinary active, onboarding and system administrator.
+        for who in ['active','active2','admin']:
+            member=hub.db.session.get(hub.Member,self.ids[who]);member.network_access_enabled=False;hub.db.session.commit()
+            data=self.get('/api/alumni-space/me',who).get_json();self.assertEqual(data['environment'],'MEMBERS')
+            self.assertEqual(self.bridge(who,True).status_code,200)
+            self.assertEqual(self.bridge(who,False).status_code,200)
+        membership=hub.Membership.query.filter_by(member_id=self.ids['active2']).order_by(hub.Membership.id.desc()).first();membership.status='ONBOARDING';hub.db.session.commit()
+        self.assertEqual(self.get('/api/alumni-space/me','active2').get_json()['environment'],'MEMBERS')
+        self.assertEqual(self.bridge('active2',True).status_code,200)
+        rows={r['id']:r for r in self.get('/api/members','admin').get_json()}
+        for who in ['active','active2','admin']:self.assertTrue(rows[self.ids[who]]['canActivateAlumniBridge'])
+        self.assertFalse(rows[self.ids['off']]['canActivateAlumniBridge']);self.assertEqual(rows[self.ids['off']]['environment'],'ALUMNI')
+        self.assertFalse(rows[self.ids['former']]['canActivateAlumniBridge']);self.assertEqual(rows[self.ids['former']]['environment'],'INACTIVE')
+
 if __name__=='__main__':unittest.main()
