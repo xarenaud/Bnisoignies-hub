@@ -45,7 +45,7 @@ test('system admin can walk through both demo participants without production wr
  await f.click(' Recommandations');let status=f.w.document.querySelector('.memberList select');status.value='NO_FOLLOW_UP';status.dispatchEvent(new f.w.Event('change',{bubbles:true}));await wait();
  await f.click('Suppléances');form=f.w.document.querySelector('form');form.elements.date.value='2099-01-01';form.dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));await wait();await wait();assert.ok(f.text().includes('2099-01-01'));
  await f.click('Tester côté membre');await f.click('Participer');await f.click('Solliciter une suppléance');await f.click('Demander une suppléance');
- await f.click('Tester côté ancien');await f.click('Suppléances');await f.click('Accepter');assert.ok(f.text().includes('Acceptée'));
+ await f.click('Tester côté ancien');await f.click('Suppléances');await f.click('Accepter');assert.ok(f.text().includes('Acceptée'));assert.ok(f.text().includes('Ancien Test a accepté de remplacer Membre Test le 2099-01-01.'));
  await f.click('Tester côté membre');await f.click('Participer');await f.click('MPB');assert.ok(f.text().includes('crédité à Membre Test'));
  await f.click('Profil');await f.click('Désactiver ma liaison');await f.click('Participer');assert.ok(![...f.w.document.querySelectorAll('button')].some(b=>b.textContent==='MPB'));
  await f.click('Réinitialiser le test');await f.click('Échanges');assert.ok(!f.text().includes('Contact du parcours'));
@@ -58,9 +58,9 @@ test('open replacement call notifies both alumni and only the first can commit',
  await f.click('Vue Ancien membre');await f.click('Tester côté membre');await f.click('Profil');await f.click('J’active personnellement ma liaison');await f.click('Participer');await f.click('Solliciter une suppléance');
  const form=f.w.document.querySelector('form');form.elements.date.value='2099-02-05';form.elements.note.value='Besoin ouvert de test';form.dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));await wait();await wait();assert.ok(f.text().includes('Besoin publié.'));
  for(const actor of ['Tester côté ancien','Tester un autre ancien']){await f.click(actor);f.w.document.querySelector('header button[title="Notifications"]').click();await wait();await wait();assert.ok(f.text().includes('Suppléance recherchée'));assert.ok(f.text().includes('2099-02-05'));}
- await f.click('Tester côté ancien');await f.click('Suppléances');await f.click('Je m’engage à assurer la suppléance');assert.ok(f.text().includes('Votre engagement est confirmé.'));
+ await f.click('Tester côté ancien');await f.click('Suppléances');await f.click('Je m’engage à assurer la suppléance');assert.ok(f.text().includes('Votre engagement est confirmé.'));assert.ok(f.text().includes('Ancien Test a accepté de remplacer Membre Test le 2099-02-05.'));
  await f.click('Tester un autre ancien');await f.click('Suppléances');assert.ok(f.text().includes('Prise en charge par Ancien Test'));assert.ok(!f.text().includes('Je m’engage à assurer la suppléance'));
- await f.click('Tester côté membre');f.w.document.querySelector('header button[title="Notifications"]').click();await wait();await wait();assert.ok(f.text().includes('Suppléance confirmée'));assert.ok(f.text().includes('Ancien Test s’engage'));
+ await f.click('Tester côté membre');f.w.document.querySelector('header button[title="Notifications"]').click();await wait();await wait();assert.ok(f.text().includes('Suppléance confirmée'));assert.ok(f.text().includes('Ancien Test a accepté de remplacer Membre Test le 2099-02-05.'));
  assert.equal(f.calls.filter(c=>c.method!=='GET').length,0);assert.deepEqual(f.errors,[]);
 }finally{f.close();}});
 test('two immediate acceptance attempts keep only the first commitment in demo',async()=>{

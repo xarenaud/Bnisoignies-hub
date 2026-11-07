@@ -90,7 +90,10 @@ export function hubFetch(url,options={}){
  if(p.startsWith('/alumni-space/substitutions/')&&method==='PATCH'){
   const r=s.requests.find(x=>x.id===Number(p.split('/').pop()));
   if(!r||!(alumni?r.alumniId===id&&['ACCEPTED','DECLINED'].includes(data.status)&&r.status==='REQUESTED':data.status==='CANCELLED'&&s.bridge))return fail('Cette action appartient à l’autre participant.');
-  r.status=data.status;notify(alumni?-1:r.alumniId,'Réponse à la suppléance de test');return result(r);
+  r.status=data.status;
+  if(data.status==='ACCEPTED'){r.acceptedAt=new Date().toISOString();notify(-1,'Suppléance confirmée',r.alumni+' a accepté de remplacer '+r.official+' le '+r.date+'.');}
+  else notify(alumni?-1:r.alumniId,'Réponse à la suppléance de test',name(id)+(data.status==='DECLINED'?' a refusé la demande de suppléance du ':' a annulé la demande de suppléance du ')+r.date+'.');
+  return result(r);
  }
  // Open replacement call: publication and claim are synchronous in the isolated session.
  if(p==='/alumni-space/replacement-needs'){
@@ -110,8 +113,8 @@ export function hubFetch(url,options={}){
   if(need.status!=='OPEN')return result({error:'Cette suppléance a déjà été prise en charge par '+need.alumni+'.'},409);
   // Check before assigning; no await between check and assignment, first acceptance wins.
   need.status='ACCEPTED';need.alumniId=id;need.alumni=name(id);need.acceptedAt=new Date().toISOString();
-  notify(need.officialId,'Suppléance confirmée',name(id)+' s’engage à vous remplacer le '+need.date+'.');
-  for(const target of [-2,-3])notify(target,target===id?'Votre engagement est confirmé':'Suppléance pourvue',name(id)+' assurera le remplacement de '+need.official+' le '+need.date+'.');
+  notify(need.officialId,'Suppléance confirmée',name(id)+' a accepté de remplacer '+need.official+' le '+need.date+'.');
+  for(const target of [-2,-3])notify(target,target===id?'Votre engagement est confirmé':'Suppléance pourvue',name(id)+' a accepté de remplacer '+need.official+' le '+need.date+'.');
   return result(need);
  }
  // Fail closed: unknown writes never leave the demo, even profile/password/group forms.
