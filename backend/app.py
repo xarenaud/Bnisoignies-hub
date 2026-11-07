@@ -1669,10 +1669,57 @@ L’icône HUB vous permettra de retrouver votre espace. Connectez-vous avec l�
 Si le lien s’ouvre dans le navigateur intégré de votre messagerie, copiez l’adresse du HUB dans Safari (iPhone) ou Chrome (Android).
 
 À bientôt sur HUB Soignies.""")
+            if alumni_member(member):
+                msg.replace_header("Subject","Et si on gardait le lien ? Découvre le HUB des anciens")
+                msg["Cc"]="hub@bim-soignies.be"
+                msg.set_content(f"""Bonjour {member.first_name},
+
+Tu as fait partie du BNI de Soignies. Nous y avons partagé des rencontres, du business et de bons moments. Pourquoi perdre ce lien après ton départ du groupe ?
+
+Nous avons développé HUB – BIM, une webapp pour continuer à échanger entre anciens, ainsi qu’avec les membres actifs qui ont choisi d’activer cette liaison.
+
+Tu peux y transmettre une recommandation, enregistrer un tête-à-tête (TAT), un Merci pour le Business (MPB), mais aussi devenir un SUPER SUPPLÉANT !
+
+Le principe : lorsqu’un membre signale un besoin de remplacement, les anciens reçoivent une notification. Si tu es disponible, tu peux accepter. Le premier qui confirme s’engage à assurer la suppléance.
+
+Aucune obligation de participer régulièrement : chacun échange à son rythme. C’est une première expérience pour garder le contact et voir ce que nous pourrons construire ensemble, dans l’esprit de confiance et d’entraide que tu connais.
+
+ENVIE D’ESSAYER ?
+
+Commence par activer ton compte grâce à ton lien personnel d’invitation et choisis ton mot de passe :
+{activation_url}
+
+Ce lien est valable 48 heures.
+
+Ajoute ensuite le HUB à l’écran d’accueil de ton téléphone :
+
+Sur iPhone (Safari)
+1. Ouvre {base}/ dans Safari.
+2. Appuie sur Partager — le carré avec une flèche vers le haut, éventuellement accessible depuis le menu.
+3. Choisis Sur l’écran d’accueil.
+4. Si l’option apparaît, active Ouvrir comme app web, puis appuie sur Ajouter.
+
+Sur Android (Google Chrome)
+1. Ouvre {base}/ dans Google Chrome.
+2. Appuie sur les trois points du menu.
+3. Choisis Ajouter à l’écran d’accueil ou Installer et créer un raccourci, selon ta version.
+4. Confirme avec Ajouter ou Installer.
+
+Utilise bien l’adresse habituelle du HUB pour créer l’icône, et non le lien personnel d’activation temporaire.
+
+Tu peux ensuite ouvrir le HUB depuis son icône, te connecter et commencer à découvrir les échanges et les suppléances proposées.
+
+Une question ? Écris-nous à hub@bim-soignies.be, ou contacte Xavier au +32 473 531 656.
+
+Au plaisir de te retrouver !
+
+Le groupe HUB – BIM
+""")
             port=int(os.getenv("SMTP_PORT","587"));user=os.getenv("SMTP_USER","").strip();password=os.getenv("SMTP_PASSWORD","")
             use_ssl=os.getenv("SMTP_SSL","false").lower() in {"1","true","yes"}
-            smtp=(smtplib.SMTP_SSL(host,port,timeout=15) if use_ssl else smtplib.SMTP(host,port,timeout=15))
+            smtp=None
             try:
+                smtp=(smtplib.SMTP_SSL(host,port,timeout=15) if use_ssl else smtplib.SMTP(host,port,timeout=15))
                 if not use_ssl and os.getenv("SMTP_STARTTLS","true").lower() in {"1","true","yes"}:smtp.starttls()
                 if user:smtp.login(user,password)
                 smtp.send_message(msg);email_sent=True

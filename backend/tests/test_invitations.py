@@ -21,7 +21,14 @@ class InvitationTests(unittest.TestCase):
                 self.assertEqual(msg['To'],kind.lower()+'@example.test')
                 for text in ['Sur iPhone (Safari)','Sur Android (Google Chrome)','écran d’accueil','https://hub.test/','48 heures','non le lien personnel']:
                     self.assertIn(text,body)
-                self.assertIn('Anciens' if kind=='ALUMNI' else 'Soignies',msg['Subject'])
+                if kind=='ALUMNI':
+                    self.assertEqual(msg['Subject'],'Et si on gardait le lien ? Découvre le HUB des anciens')
+                    self.assertEqual(msg['Cc'],'hub@bim-soignies.be')
+                    self.assertIn('Bonjour ALUMNI,',body)
+                    for text in ['HUB – BIM','SUPER SUPPLÉANT','ont choisi d’activer cette liaison','Aucune obligation','+32 473 531 656','Le groupe HUB – BIM',r.get_json()['activationUrl']]:self.assertIn(text,body)
+                    self.assertNotIn('BOM',body)
+                else:
+                    self.assertIn('Soignies',msg['Subject']);self.assertIsNone(msg['Cc']);self.assertNotIn('SUPER SUPPLÉANT',body)
             token=parse_qs(urlparse(r.get_json()['activationUrl']).query)['activate'][0]
             activated=self.client.post('/api/auth/activate',json={'token':token,'password':'FixturePassword123'})
             self.assertEqual(activated.status_code,200)

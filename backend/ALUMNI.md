@@ -66,3 +66,11 @@ La suite vérifie les accès, les dates, les destinataires des mails, les deux
 parcours, les conflits et deux acceptations concurrentes sur la base SQLite
 isolée. Les verrous `FOR UPDATE` sont appliqués par PostgreSQL en production ;
 les essais automatisés locaux ne constituent pas un test de charge PostgreSQL.
+
+## Invitation des anciens
+
+Le bouton Inviter envoie aux anciens le message validé « Et si on gardait le lien ? »
+avec le prénom, le lien d’activation personnel valable 48 h, le tutoriel iPhone/Android,
+les contacts et la signature HUB – BIM. `hub@bim-soignies.be` est en copie (Cc).
+Les nouveaux membres BNI conservent leur modèle distinct, sans cette copie.
+Le déploiement ne renvoie pas les invitations précédentes et ne lance aucun lot.
