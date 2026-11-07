@@ -14,7 +14,7 @@ async function mount(environment='MEMBERS',admin=false,url='https://hub.test/',i
   if(p==='/auth/me'){if(initialAuthOffline)throw new Error('offline');data={member:user()};}
   if(p==='/members/3/invite')data={activationUrl:'https://hub.test/?activate=fixture-invitation',emailSent:false,copyEmail:'hub@bim-soignies.be',copyEmailSent:false,expiresInHours:48};
   if(p==='/auth/activate')data={status:'ACTIVE'};
-  if(p==='/members')data=[{id:2,firstName:'Actif',lastName:'Test',status:'ACTIVE',networkType:'OFFICIAL_BNI'},{id:3,firstName:'Ancien',lastName:'Test',status:'OFF',networkType:'OFF'}];
+  if(p==='/members')data=[{id:2,firstName:'Actif',lastName:'Test',status:'ACTIVE',accountStatus:'ACTIVE',networkType:'OFFICIAL_BNI'},{id:3,firstName:'Ancien',lastName:'Test',status:'OFF',networkType:'OFF'}];
   if(p==='/me/notifications')data={unread:0,items:[]};
   if(p==='/me/home')data={nextMeeting:null,memberStats:null,groupStats:null};
   if(p==='/alumni-space/me')data={environment,bridgeEnabled:opted,requestedAt:null,stats:null};
@@ -62,3 +62,18 @@ test('personal bridge stays visible for every active role when secondary profile
   f.w.fetch=normal;await f.click('J’active personnellement ma liaison');assert.ok(f.text().includes('Désactiver ma liaison'));assert.deepEqual(f.errors,[]);
  }finally{f.close();}}
 });
+
+test('system admin enters real member assistance and restores original session without resetting password',async()=>{const f=await mount('MEMBERS',true);try{
+ const normal=f.w.fetch;const writes=[];const target={id:2,firstName:'Actif',lastName:'Test',environment:'MEMBERS',roles:[],isAdmin:false,isSystemAdmin:false,supportSession:true,supportReadOnly:true,alumniBridgeEnabled:false};
+ f.w.fetch=async(url,options={})=>{const p=new URL(url).pathname.replace('/api','');if(options.method&&options.method!=='GET')writes.push(p);
+  if(p==='/system/support-sessions')return {ok:true,json:async()=>({token:'support-fixture',memberId:2})};
+  if(p==='/system/support-sessions/stop')return {ok:true,json:async()=>({status:'ok'})};
+  if(p==='/auth/me'&&options.headers?.Authorization==='Bearer support-fixture')return {ok:true,json:async()=>({member:target})};
+  if(p==='/me/profile'&&options.headers?.Authorization==='Bearer support-fixture')return {ok:true,json:async()=>({...target,email:'actif@example.test',subscription:{label:'Forfait réel'}})};
+  return normal(url,options);
+ };
+ await f.click('Ouvrir');[...f.w.document.querySelectorAll('button')].find(b=>b.querySelector('b')?.textContent==='Membres').click();await wait();await wait();await f.click('Voir comme ce membre');
+ assert.ok(f.text().includes('Mode Doppelganger · Actif Test'));assert.equal(f.w.localStorage.getItem('bni_token'),'fixture');assert.equal(f.w.sessionStorage.getItem('hub_support_token'),'support-fixture');assert.ok(!f.text().includes('Voir comme membre'));
+ await f.click('Profil');assert.ok(f.text().includes('Actif Test'));await f.click('Recevoir un lien de réinitialisation');assert.ok(f.text().includes('Aucun e-mail de réinitialisation envoyé.'));assert.ok(!writes.includes('/auth/forgot-password'));
+ await f.click('Revenir à mon compte administrateur');assert.equal(f.w.localStorage.getItem('bni_token'),'fixture');assert.equal(f.w.sessionStorage.getItem('hub_support_token'),null);assert.ok(f.text().includes('Voir comme membre'));assert.ok(!f.text().includes('Mode Doppelganger ·'));assert.deepEqual(f.errors,[]);
+}finally{f.close();}});

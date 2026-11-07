@@ -1,6 +1,7 @@
+import {getSessionToken} from './session.js';
 import React,{useEffect,useState} from 'react';
 const API=import.meta.env.VITE_API_URL||'https://bni-hub-api-production.up.railway.app/api';
-const auth=()=>({Authorization:'Bearer '+localStorage.getItem('bni_token')});
+const auth=()=>({Authorization:'Bearer '+getSessionToken()});
 const changed=()=>window.dispatchEvent(new Event('hub:member-changed'));
 async function api(path,method='GET',data){const r=await fetch(API+path,{method,headers:{...auth(),...(data?{'Content-Type':'application/json'}:{})},...(data?{body:JSON.stringify(data)}:{})});const x=await r.json();if(!r.ok)throw new Error(x.error||'Opération impossible.');return x;}
 export function AlumniSettings({user}){

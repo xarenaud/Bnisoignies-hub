@@ -50,6 +50,8 @@ class AuthSession(db.Model):
     __tablename__="auth_sessions"
     id=db.Column(db.Integer,primary_key=True)
     account_id=db.Column(db.Integer,db.ForeignKey("user_accounts.id"),nullable=False,index=True)
+    support_actor_id=db.Column(db.Integer,nullable=True)
+    support_parent_id=db.Column(db.Integer,nullable=True)
     token_hash=db.Column(db.String(64),nullable=False,unique=True,index=True)
     expires_at=db.Column(db.DateTime,nullable=False)
     created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
@@ -428,14 +430,16 @@ def create_app():
         return q.first()
 
     def require_admin():
-        account,_=bearer_account()
+        account,session=bearer_account()
         if not account:return None,({"error":"Authentification requise."},401)
+        if session.support_actor_id:return None,({"error":"Administration inaccessible en mode assistance."},403)
         if not account_payload(account)["isAdmin"]:return None,({"error":"Accès administrateur requis."},403)
         return account,None
 
     def require_system_admin():
-        account,_=bearer_account()
+        account,session=bearer_account()
         if not account:return None,({"error":"Authentification requise."},401)
+        if session.support_actor_id:return None,({"error":"Administration inaccessible en mode assistance."},403)
         if not account.is_system_admin:return None,({"error":"Accès administrateur système requis."},403)
         return account,None
 
@@ -482,7 +486,11 @@ def create_app():
     @app.before_request
     def enforce_environment():
         if not request.path.startswith("/api/"):return None
-        account,_=bearer_account()
+        account,session=bearer_account()
+        if session and session.support_actor_id:
+            if request.path.startswith(("/api/network/contributors","/api/network/hub-summary","/api/network/leaderboard")):return {"error":"Statistiques administratives inaccessibles en mode assistance."},403
+            if request.path.startswith("/api/system/") and request.path!="/api/system/support-sessions/stop":return {"error":"Administration inaccessible en mode assistance."},403
+            if request.method not in {"GET","HEAD","OPTIONS"} and request.path!="/api/system/support-sessions/stop":return {"error":"Mode assistance en lecture seule. Revenez à votre compte administrateur pour agir."},403
         if not account or account.is_system_admin:return None
         path=request.path
         if path.startswith(("/api/network/contributors","/api/network/hub-summary","/api/network/leaderboard")):
@@ -1847,7 +1855,41 @@ Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet e-mai
                 db.session.delete(session);db.session.commit()
             return None,None
         if session.account.status!="ACTIVE":return None,None
+        if session.support_actor_id:
+            if session.account.is_system_admin:return None,None
+            actor=db.session.get(UserAccount,session.support_actor_id)
+            parent=db.session.get(AuthSession,session.support_parent_id)
+            if not actor or not actor.is_system_admin or actor.status!="ACTIVE" or not parent or parent.account_id!=actor.id or parent.support_actor_id or parent.expires_at<datetime.utcnow():return None,None
         return session.account,session
+
+    @app.post("/api/system/support-sessions")
+    def start_support_session():
+        actor,err=require_system_admin()
+        if err:return err
+        _,parent=bearer_account()
+        try:member_id=int((request.get_json(silent=True) or {}).get("memberId"))
+        except (ValueError,TypeError):return {"error":"Membre invalide."},400
+        member=db.session.get(Member,member_id)
+        target=member.user_account if member else None
+        if not member:return {"error":"Membre introuvable."},404
+        if not target or target.status!="ACTIVE":return {"error":"Le membre doit avoir activé son compte pour ouvrir son interface réelle."},400
+        if target.is_system_admin:return {"error":"Utilisez votre vue membre pour un compte super administrateur."},403
+        raw=secrets.token_urlsafe(48)
+        import hashlib
+        session=AuthSession(account_id=target.id,token_hash=hashlib.sha256(raw.encode()).hexdigest(),expires_at=min(parent.expires_at,datetime.utcnow()+timedelta(minutes=30)),support_actor_id=actor.id,support_parent_id=parent.id)
+        db.session.add(session);db.session.flush()
+        audit(actor,"SUPPORT_SESSION_STARTED","member",member.id,f"session_id={session.id};read_only=true;expires_at={session.expires_at.isoformat()}")
+        db.session.commit()
+        return {"token":raw,"expiresAt":session.expires_at.isoformat()+"Z","memberId":member.id,"readOnly":True},201
+
+    @app.post("/api/system/support-sessions/stop")
+    def stop_support_session():
+        _,session=bearer_account()
+        if not session or not session.support_actor_id:return {"error":"Session assistance introuvable."},401
+        actor=db.session.get(UserAccount,session.support_actor_id)
+        audit(actor,"SUPPORT_SESSION_STOPPED","member",session.account.member_id,f"session_id={session.id}")
+        db.session.delete(session);db.session.commit()
+        return {"status":"ok"}
 
     @app.post("/api/auth/login")
     def login():
@@ -1868,10 +1910,12 @@ Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet e-mai
         if not account:return {"error":"Session invalide ou expirée."},401
         now=datetime.utcnow()
         # Extend only here, before application writes; existing valid sessions are upgraded too.
-        if session.expires_at<now+timedelta(days=SESSION_DAYS-1):
+        if not session.support_actor_id and session.expires_at<now+timedelta(days=SESSION_DAYS-1):
             session.expires_at=now+timedelta(days=SESSION_DAYS)
             db.session.commit()
-        return {"member":account_payload(account),"expiresInDays":SESSION_DAYS,"expiresAt":session.expires_at.isoformat()+"Z"}
+        payload=account_payload(account)
+        if session.support_actor_id:payload={**payload,"isAdmin":False,"isSystemAdmin":False,"supportSession":True,"supportReadOnly":True,"supportExpiresAt":session.expires_at.isoformat()+"Z"}
+        return {"member":payload,"expiresInDays":SESSION_DAYS if not session.support_actor_id else None,"expiresAt":session.expires_at.isoformat()+"Z"}
 
     @app.post("/api/auth/logout")
     def logout():
@@ -2967,6 +3011,10 @@ Cette demande est également disponible dans HUB Soignies.""")
 
     with app.app_context():
         db.create_all()
+        if db.engine.dialect.name=="postgresql":
+            db.session.execute(text("ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS support_actor_id INTEGER"))
+            db.session.execute(text("ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS support_parent_id INTEGER"))
+            db.session.commit()
         if db.engine.dialect.name=="postgresql":
             db.session.execute(text("ALTER TABLE members ADD COLUMN IF NOT EXISTS alumni_bridge_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
             db.session.execute(text("ALTER TABLE members ADD COLUMN IF NOT EXISTS alumni_requested_at TIMESTAMP"))

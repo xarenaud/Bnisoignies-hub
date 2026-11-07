@@ -105,3 +105,28 @@ la possibilité d’activer la liaison et son état choisi par le membre. Il
 distingue les actifs/en intégration (choix personnel disponible), les anciens
 admis (interface Anciens directe) et les fiches archivées hors groupe.
 Aucun consentement n’est activé automatiquement par cette vérification.
+
+## Mode Doppelganger / assistance réelle
+
+Le super administrateur peut ouvrir « Voir comme ce membre » depuis une fiche
+de l’annuaire dont le compte est actif. Aucun mot de passe n’est utilisé ou
+modifié. Le serveur crée une session déléguée de 30 minutes maximum, liée au
+compte cible et à la session du super administrateur. Les sessions normales du
+membre restent valides. Les comptes super administrateurs ne sont pas des cibles.
+
+La session déléguée est en lecture seule, sans droits d’administration. Le serveur
+bloque ses mutations, même en appelant directement une route, et contrôle le
+compte du membre ainsi que les droits et la validité de la session de l’acteur
+à chaque requête. La session n’est pas prolongée par `/auth/me`. La révocation
+ou l’expiration du parent invalide aussi l’accès délégué.
+
+Le jeton d’assistance reste dans le sessionStorage de l’onglet, séparé du jeton
+administrateur conservé. Une bannière identifie le membre et permet de revenir
+au compte administrateur ; les navigations sont séparées. Une expiration restaure
+la session administrateur si elle est encore valide. L’ouverture et la fermeture
+sont auditées au nom de l’acteur, sans stocker le jeton brut.
+
+Routes : `POST /system/support-sessions` avec `memberId` (super administrateur),
+puis `POST /system/support-sessions/stop` avec le jeton délégué. Deux colonnes
+nullables de `auth_sessions` identifient l’acteur et la session parente ; elles
+sont ajoutées au démarrage sur PostgreSQL sans changer les sessions existantes.
