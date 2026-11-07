@@ -500,13 +500,30 @@ def campaign_tables():
 campaign_tables()
 
 
+def exclude_registered_campaign_recipients(db, campaign_id=None, due_only=True):
+    # Match the current registration list immediately before claiming each message.
+    # The organizer explicitly requested their own copy, even if already registered.
+    scope = "AND campaign_id=?" if campaign_id else ""
+    due = "AND campaign_id IN (SELECT id FROM invitation_campaigns WHERE due<=?)" if due_only else ""
+    args = ([campaign_id] if campaign_id else []) + ([time.time()] if due_only else [])
+    return db.execute(
+        """UPDATE invitation_campaign_recipients
+           SET status='excluded_registered',error='AlreadyRegistered'
+           WHERE status='pending' AND lower(trim(email))<>'xavier@cx-com.be'
+           AND EXISTS (
+             SELECT 1 FROM registrations r WHERE r.is_test=0
+             AND lower(trim(COALESCE(json_extract(r.payload,'$.email'),'')))=lower(trim(invitation_campaign_recipients.email))
+           ) """ + scope + " " + due, args).rowcount
+
+
 def campaign_summary(campaign_id):
     with database() as db:
         row = db.execute('SELECT id,due,subject FROM invitation_campaigns WHERE id=?', (campaign_id,)).fetchone()
         if not row:
             return None
         counts = {r['status']: r['n'] for r in db.execute('SELECT status,COUNT(*) n FROM invitation_campaign_recipients WHERE campaign_id=? GROUP BY status', (campaign_id,))}
-    return dict(id=row['id'], scheduledFor=datetime.fromtimestamp(row['due'], ZoneInfo('Europe/Brussels')).isoformat(), subject=row['subject'], counts=counts, total=sum(counts.values()))
+        registered_pending = db.execute("SELECT COUNT(*) FROM invitation_campaign_recipients c WHERE c.campaign_id=? AND c.status='pending' AND lower(trim(c.email))<>'xavier@cx-com.be' AND EXISTS (SELECT 1 FROM registrations r WHERE r.is_test=0 AND lower(trim(COALESCE(json_extract(r.payload,'$.email'),'')))=lower(trim(c.email)))", (campaign_id,)).fetchone()[0]
+    return dict(id=row['id'], scheduledFor=datetime.fromtimestamp(row['due'], ZoneInfo('Europe/Brussels')).isoformat(), subject=row['subject'], counts=counts, total=sum(counts.values()), registeredPendingExclusion=registered_pending, organizerCopy='xavier@cx-com.be')
 
 
 @app.route('/api/admin/invitation-campaigns/<campaign_id>', methods=['GET', 'POST'])
@@ -545,6 +562,7 @@ def deliver_campaign():
     now = time.time()
     with database() as db:
         db.execute('BEGIN IMMEDIATE')
+        exclude_registered_campaign_recipients(db)
         # Do not silently resend after ambiguous delivery or a process restart.
         db.execute("UPDATE invitation_campaign_recipients SET status='unknown',error='DeliveryInterrupted' WHERE status='sending' AND claimed_at < ?", (now-300,))
         row = db.execute("SELECT c.id,c.subject,c.html,r.email FROM invitation_campaigns c JOIN invitation_campaign_recipients r ON r.campaign_id=c.id WHERE c.due<=? AND r.status='pending' ORDER BY c.due,r.rowid LIMIT 1", (now,)).fetchone()
