@@ -31,7 +31,7 @@ archivés conservent leur identifiant et leurs anciennes adhésions.
 ## Aperçu administrateur des deux participants
 
 Le bouton « Vue Ancien membre » est réservé au compte administrateur système.
-Il ouvre un parcours local en mémoire avec deux identités fictives, et réutilise
+Il ouvre un parcours local en mémoire avec un membre actif et deux anciens fictifs, et réutilise
 les composants Membres et Anciens. Le bandeau permet de changer de participant,
 réinitialiser les essais ou revenir au compte réel. Aucun statut réel ne change.
 `src/preview.js` intercepte les appels de ces composants pendant le test :
@@ -42,3 +42,18 @@ refusées. La navigation de test est séparée de la navigation réelle. Les ess
 à la fermeture du test ou au rechargement. Ce simulateur vérifie le parcours
 visuel et les échanges entre participants ; il ne remplace pas les tests API
 d’isolation, de consentement, de réunion existante ou d’envoi de mails.
+
+### Appels ouverts de suppléance (test uniquement)
+
+Le membre fictif ayant activé sa liaison peut publier un besoin daté dans
+Participer → Solliciter une suppléance. Aucune disponibilité préalable n’est
+requise. Les deux anciens fictifs reçoivent « Suppléance recherchée ». Le bouton
+d’acceptation demande confirmation de l’engagement. La première acceptation
+attribue le remplacement et notifie le membre ainsi que les deux anciens.
+Toute acceptation suivante renvoie un conflit 409, sans changer le titulaire.
+Le bandeau permet de basculer vers le deuxième ancien pour vérifier ce cas.
+Les routes `/alumni-space/replacement-needs` sont simulées uniquement dans
+`src/preview.js` : aucun endpoint, compte, notification ni réservation n’est
+créé sur le serveur de production. Les tests couvrent aussi deux tentatives
+immédiates d’acceptation. Une future mise en production nécessitera son propre
+verrouillage transactionnel en base et des contrôles sur la réunion réelle.
