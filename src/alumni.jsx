@@ -1,8 +1,9 @@
+import {hubFetch} from './preview.js';
 import React,{useEffect,useState} from 'react';
 const API=import.meta.env.VITE_API_URL||'https://bni-hub-api-production.up.railway.app/api';
 const auth=()=>({Authorization:'Bearer '+localStorage.getItem('bni_token')});
 const changed=()=>window.dispatchEvent(new Event('hub:member-changed'));
-async function api(path,method='GET',data){const r=await fetch(API+path,{method,headers:{...auth(),...(data?{'Content-Type':'application/json'}:{})},...(data?{body:JSON.stringify(data)}:{})});const x=await r.json();if(!r.ok)throw new Error(x.error||'Opération impossible.');return x;}
+async function api(path,method='GET',data){const r=await hubFetch(API+path,{method,headers:{...auth(),...(data?{'Content-Type':'application/json'}:{})},...(data?{body:JSON.stringify(data)}:{})});const x=await r.json();if(!r.ok)throw new Error(x.error||'Opération impossible.');return x;}
 export function AlumniSettings({user}){
  const[data,setData]=useState(null),[error,setError]=useState(''),[message,setMessage]=useState(''),[busy,setBusy]=useState(false);
  useEffect(()=>{api('/alumni-space/me').then(setData).catch(e=>setError(e.message));},[user.alumniBridgeEnabled,user.environment]);

@@ -27,3 +27,18 @@ Créer/importer ne crée pas de compte et n’envoie aucune invitation automatiq
 L’import présente un aperçu, bloque les doublons et les changements d’espace
 involontaires, puis revalide tout le lot avant toute écriture. Les anciens déjà
 archivés conservent leur identifiant et leurs anciennes adhésions.
+
+## Aperçu administrateur des deux participants
+
+Le bouton « Vue Ancien membre » est réservé au compte administrateur système.
+Il ouvre un parcours local en mémoire avec deux identités fictives, et réutilise
+les composants Membres et Anciens. Le bandeau permet de changer de participant,
+réinitialiser les essais ou revenir au compte réel. Aucun statut réel ne change.
+`src/preview.js` intercepte les appels de ces composants pendant le test :
+seule la lecture de la session réelle (`GET /auth/me`) est transmise au serveur.
+Toutes les autres requêtes restent locales et les écritures non simulées sont
+refusées. La navigation de test est séparée de la navigation réelle. Les essais
+(recommandations, MPB, TAT, liaison, notifications et suppléances) disparaissent
+à la fermeture du test ou au rechargement. Ce simulateur vérifie le parcours
+visuel et les échanges entre participants ; il ne remplace pas les tests API
+d’isolation, de consentement, de réunion existante ou d’envoi de mails.
