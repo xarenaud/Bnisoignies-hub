@@ -1,12 +1,14 @@
 const test=require('node:test');const assert=require('node:assert/strict');const {JSDOM}=require('jsdom');const esbuild=require('esbuild');const path=require('node:path');
 let bundle;
 const wait=()=>new Promise(r=>setTimeout(r,60));
-async function mount(environment='MEMBERS',admin=false){
+async function mount(environment='MEMBERS',admin=false,url='https://hub.test/'){
  if(!bundle){const r=await esbuild.build({entryPoints:[path.join(__dirname,'../src/main.jsx')],bundle:true,write:false,format:'iife',loader:{'.css':'empty'},define:{'import.meta.env.VITE_API_URL':'"https://hub.test/api"','import.meta.env.PROD':'false'}});bundle=r.outputFiles[0].text;}
- const dom=new JSDOM('<div id="root"></div>',{url:'https://hub.test/',runScripts:'dangerously'}),w=dom.window;const errors=[];w.addEventListener('error',e=>errors.push(e.message));w.localStorage.setItem('bni_token','fixture');w.confirm=()=>true;
+ const dom=new JSDOM('<div id="root"></div>',{url,runScripts:'dangerously'}),w=dom.window;const errors=[];w.addEventListener('error',e=>errors.push(e.message));w.localStorage.setItem('bni_token','fixture');w.confirm=()=>true;
  let opted=false;const user=()=>({id:1,firstName:'Test',lastName:'Membre',email:'fixture@example.test',environment,alumniBridgeEnabled:opted,networkModuleEnabled:environment==='ALUMNI'||opted,networkAccessEnabled:environment==='ALUMNI'||opted,roles:[],isAdmin:admin,isSystemAdmin:admin});
  w.fetch=async(url,options={})=>{const p=new URL(url).pathname.replace('/api','');let data=[];
   if(p==='/auth/me')data={member:user()};
+  if(p==='/members/3/invite')data={activationUrl:'https://hub.test/?activate=fixture-invitation',emailSent:false,expiresInHours:48};
+  if(p==='/auth/activate')data={status:'ACTIVE'};
   if(p==='/members')data=[{id:2,firstName:'Actif',lastName:'Test',status:'ACTIVE',networkType:'OFFICIAL_BNI'},{id:3,firstName:'Ancien',lastName:'Test',status:'OFF',networkType:'OFF'}];
   if(p==='/me/notifications')data={unread:0,items:[]};
   if(p==='/me/home')data={nextMeeting:null,memberStats:null,groupStats:null};
@@ -29,3 +31,6 @@ test('alumni UI has exchanges and targeted substitutions, no official planning o
 test('inactive former member can request access without exposing the group',async()=>{const f=await mount('INACTIVE');try{assert.ok(f.text().includes('Demander mon passage chez les anciens'));assert.ok(!f.w.document.querySelector('nav'));assert.ok(!f.text().includes('Prochaine réunion'));assert.deepEqual(f.errors,[]);}finally{f.close();}});
 
 test('admin entry and imports share one explicit destination',async()=>{const f=await mount('MEMBERS',true);try{await f.click('Ouvrir');const memberButton=[...f.w.document.querySelectorAll('button')].find(b=>b.querySelector('b')?.textContent==='Membres');assert.ok(memberButton);memberButton.click();await wait();await wait();await f.click(' Ajouter');const select=f.w.document.querySelector('select[name="memberType"]');assert.ok(select);assert.equal(select.options.length,2);assert.equal(f.w.document.querySelectorAll('form select').length,1);select.value='ALUMNI';select.dispatchEvent(new f.w.Event('change',{bubbles:true}));await wait();assert.ok(f.text().includes('Créer un ancien membre'));assert.ok(!f.text().includes('Actif Test'));assert.ok(f.text().includes('Ancien Test'));await f.click(' Importer des anciens');assert.ok(f.text().includes('Choisir la destination'));assert.equal(f.w.document.querySelector('select').value,'ALUMNI');assert.deepEqual(f.errors,[]);}finally{f.close();}});
+
+test('inviting an alumnus displays the activation link without crashing',async()=>{const f=await mount('MEMBERS',true);try{await f.click('Ouvrir');[...f.w.document.querySelectorAll('button')].find(b=>b.querySelector('b')?.textContent==='Membres').click();await wait();await wait();await f.click('Anciens membres (1)');await f.click('Inviter');assert.deepEqual(f.errors,[]);assert.ok(f.text().includes('Invitation créée pour Ancien Test'));const link=f.w.document.querySelector('.inviteBox a');assert.equal(link?.href,'https://hub.test/?activate=fixture-invitation');assert.ok(f.text().includes('Copier le lien'));}finally{f.close();}});
+test('invitation URL opens password activation even when another session exists',async()=>{const f=await mount('MEMBERS',true,'https://hub.test/?activate=fixture-invitation');try{assert.ok(f.text().includes('Choisissez votre mot de passe'));const form=f.w.document.querySelector('form');form.elements.password.value='FixturePassword123';form.elements.confirm.value='FixturePassword123';form.dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));await wait();await wait();assert.ok(f.text().includes('Compte activé'));assert.deepEqual(f.errors,[]);}finally{f.close();}});

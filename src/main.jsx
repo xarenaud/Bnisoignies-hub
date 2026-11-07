@@ -1,7 +1,7 @@
 import {AlumniSettings,AlumniApp,InactiveApp,Substitutions} from './alumni.jsx';
 import {installUpdates} from './updates.js';
 if(import.meta.env.PROD)installUpdates({version:__HUB_BUILD_ID__});
-import React,{useEffect,useState}from'react';import{createRoot}from'react-dom/client';import{Home,CalendarDays,PlusCircle,BookOpen,UserRound,MapPin,Clock,Users,ArrowRight,Shield,Handshake,Mic2,Megaphone,GraduationCap,PartyPopper,Upload,Download,UserPlus,BriefcaseBusiness,Database,ChevronLeft,CheckCircle2,AlertTriangle,Bell,RefreshCw,CheckCircle,Mail,TrendingUp,Euro,BarChart3,Send,UserCheck}from'lucide-react';import'./style.css';
+import React,{useEffect,useState}from'react';import{createRoot}from'react-dom/client';import{Home,CalendarDays,PlusCircle,BookOpen,UserRound,MapPin,Clock,Users,ArrowRight,Shield,Handshake,Mic2,Megaphone,GraduationCap,PartyPopper,Upload,Download,UserPlus,BriefcaseBusiness,Database,ChevronLeft,CheckCircle2,AlertTriangle,Bell,RefreshCw,CheckCircle,Mail,TrendingUp,Euro,BarChart3,Send,UserCheck,Copy}from'lucide-react';import'./style.css';
 
 const meetings=[
 {date:'Jeu. 1 oct.',title:'Réunion hebdomadaire',type:'Régulière',place:'Soignies',time:'06:45',duty:'Accueil invités'},

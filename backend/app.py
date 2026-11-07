@@ -1515,6 +1515,27 @@ Vous êtes invité(e) à découvrir {space}.
 Activez votre accès avec ce lien (valable 48 heures) :
 {activation_url}
 
+COMMENT AJOUTER HUB À L’ÉCRAN D’ACCUEIL DE VOTRE GSM
+
+1. Activez d’abord votre compte avec le lien ci-dessus et choisissez votre mot de passe.
+2. Ouvrez ensuite l’adresse habituelle du HUB :
+{base}/
+Utilisez cette adresse pour le raccourci, et non le lien personnel d’activation qui expire après 48 heures.
+
+Sur iPhone (Safari) :
+- Ouvrez {base}/ dans Safari.
+- Touchez Partager (le carré avec une flèche vers le haut ; selon la version, passez par le menu Plus).
+- Choisissez « Sur l’écran d’accueil » ou « Ajouter à l’écran d’accueil ».
+- Si proposé, activez « Ouvrir comme app web », puis touchez « Ajouter ».
+
+Sur Android (Google Chrome) :
+- Ouvrez {base}/ dans Chrome.
+- Touchez le menu avec les trois points, puis « Installer et créer un raccourci » ou « Ajouter à l’écran d’accueil », selon votre version.
+- Choisissez « Créer un raccourci », puis « Ajouter » (ou confirmez « Installer » si cette option est proposée).
+
+L’icône HUB vous permettra de retrouver votre espace. Connectez-vous avec l’adresse e-mail qui a reçu cette invitation et votre nouveau mot de passe.
+Si le lien s’ouvre dans le navigateur intégré de votre messagerie, copiez l’adresse du HUB dans Safari (iPhone) ou Chrome (Android).
+
 À bientôt sur HUB Soignies.""")
             port=int(os.getenv("SMTP_PORT","587"));user=os.getenv("SMTP_USER","").strip();password=os.getenv("SMTP_PASSWORD","")
             use_ssl=os.getenv("SMTP_SSL","false").lower() in {"1","true","yes"}
