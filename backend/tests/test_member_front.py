@@ -89,6 +89,9 @@ class MemberFrontTests(unittest.TestCase):
 
     def test_mandate_boundaries_and_private_archive(self):
         today=datetime.now(hub.ZoneInfo('Europe/Brussels')).date()
+        current_mandate=hub.Mandate.query.filter_by(name='Actuelle').one()
+        current_mandate.start_date=today-timedelta(days=15)
+        current_mandate.end_date=today+timedelta(days=15)
         old=hub.Mandate(name='Passée',start_date=today-timedelta(days=60),end_date=today-timedelta(days=16))
         hub.db.session.add(old);hub.db.session.flush()
         for day,amount in [(old.start_date,10),(old.end_date,20),(today,30),(today+timedelta(days=1),40)]:
