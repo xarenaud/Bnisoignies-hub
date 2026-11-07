@@ -12,13 +12,13 @@ import ssl
 import threading
 from email.message import EmailMessage
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
-from flask import Flask, Response, jsonify, redirect, request, send_from_directory
+from flask import Flask, Response, jsonify, redirect, request, send_from_directory, session
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.config['MAX_CONTENT_LENGTH'] = 65536
@@ -27,6 +27,15 @@ DATA.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA / 'registrations.sqlite3'
 ADMIN_PASSWORD = os.environ.get('BNI_EVENT_ADMIN_PASSWORD', '')
 RATE_SECRET = os.environ.get('BNI_EVENT_RATE_SECRET', ADMIN_PASSWORD)
+app.config.update(
+    SECRET_KEY=hashlib.sha256(('organizer-session:' + RATE_SECRET).encode()).hexdigest(),
+    SESSION_COOKIE_NAME='bim_event_organizer',
+    SESSION_COOKIE_SECURE=True,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+    PERMANENT_SESSION_LIFETIME=timedelta(days=90),
+)
+
 NOTIFICATIONS_ENABLED = os.environ.get('BNI_EVENT_NOTIFICATIONS_ENABLED', 'false').lower() == 'true'
 NOTIFY_TO = os.environ.get('BNI_EVENT_NOTIFY_TO', 'event@bim-soignies.be')
 mail_wake = threading.Event()
@@ -232,18 +241,82 @@ def valid_name(value):
     return isinstance(value, str) and 0 < len(value.strip()) <= 100 and not any(ord(c) < 32 or ord(c) == 127 for c in value)
 
 
+def organizer_session_version():
+    return hmac.new(RATE_SECRET.encode(), ('organizer:' + ADMIN_PASSWORD).encode(), hashlib.sha256).hexdigest()
+
+
 def is_admin():
     auth = request.authorization
-    return bool(ADMIN_PASSWORD and auth and auth.username == 'bni' and hmac.compare_digest(auth.password or '', ADMIN_PASSWORD))
+    basic = bool(ADMIN_PASSWORD and auth and auth.username == 'bni' and hmac.compare_digest(auth.password or '', ADMIN_PASSWORD))
+    saved = session.get('organizer_version', '')
+    cookie = bool(ADMIN_PASSWORD and isinstance(saved, str) and saved and hmac.compare_digest(saved, organizer_session_version()))
+    return basic or cookie
 
 
 def admin_required(fn):
     @wraps(fn)
     def decorated(*args, **kwargs):
         if not is_admin():
-            return Response('Accès réservé à l’organisateur.', 401, {'WWW-Authenticate': 'Basic realm="BNI Soignies"'})
+            if request.method == 'GET' and request.accept_mimetypes.best == 'text/html':
+                return redirect('/admin/connexion', code=303)
+            # Retain authenticated API access without triggering the browser's cached Basic dialog.
+            return Response('Connectez-vous sur /admin/connexion.', 401)
         return fn(*args, **kwargs)
     return decorated
+
+
+@app.route('/admin/connexion', methods=['GET', 'POST'])
+def organizer_login():
+    from html import escape
+    error = ''
+    status = 200
+    if request.method == 'GET' and session.get('organizer_version') == organizer_session_version() and ADMIN_PASSWORD:
+        return redirect('/admin/inscriptions', code=303)
+    if not session.get('login_csrf'):
+        session['login_csrf'] = secrets.token_urlsafe(32)
+    if request.method == 'POST':
+        supplied = request.form.get('csrf', '')
+        expected = session.get('login_csrf', '')
+        if not same_origin() or not supplied or not hmac.compare_digest(supplied, expected):
+            error = 'La page de connexion a expiré. Réessayez avec ce formulaire.'
+            status = 403
+        else:
+            address = request.headers.get('X-Real-IP', request.remote_addr or '')
+            address_hash = hmac.new(RATE_SECRET.encode(), ('login:' + address).encode(), hashlib.sha256).hexdigest()
+            window = int(time.time()) // 900
+            with database() as db:
+                db.execute('CREATE TABLE IF NOT EXISTS organizer_login_attempts (address_hash TEXT, window INTEGER, attempts INTEGER NOT NULL, PRIMARY KEY(address_hash,window))')
+                db.execute('BEGIN IMMEDIATE') if not db.in_transaction else None
+                db.execute('DELETE FROM organizer_login_attempts WHERE window < ?', (window,))
+                previous = db.execute('SELECT attempts FROM organizer_login_attempts WHERE address_hash=? AND window=?', (address_hash,window)).fetchone()
+                limited = bool(previous and previous['attempts'] >= 15)
+                if not limited:
+                    db.execute('INSERT INTO organizer_login_attempts VALUES(?,?,1) ON CONFLICT(address_hash,window) DO UPDATE SET attempts=attempts+1', (address_hash,window))
+            if limited:
+                error = 'Trop de tentatives. Réessayez dans 15 minutes.'
+                status = 429
+            elif (ADMIN_PASSWORD and request.form.get('username','').strip().lower() == 'bni' and
+                  hmac.compare_digest(request.form.get('password','').strip(), ADMIN_PASSWORD)):
+                with database() as db:
+                    db.execute('DELETE FROM organizer_login_attempts WHERE address_hash=?', (address_hash,))
+                session.clear()
+                session['organizer_version'] = organizer_session_version()
+                session.permanent = request.form.get('remember') == 'yes'
+                return redirect('/admin/inscriptions', code=303)
+            else:
+                error = 'Identifiant ou mot de passe incorrect. Vérifiez la majuscule et le point d’interrogation final.'
+                status = 401
+    csrf = escape(session['login_csrf'], quote=True)
+    body = '<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>Connexion organisateur · BNI Soignies</title><link rel="stylesheet" href="/admin/connexion.css"></head><body><main><p class="brand">BNI SOIGNIES · INTER BNI</p><h1>Espace organisateur</h1><p>Connectez-vous pour consulter les inscrits et gérer les paiements et les notes de frais.</p>'
+    if error:
+        body += '<p class="error" role="alert">' + escape(error) + '</p>'
+    body += '<form method="post" action="/admin/connexion"><input type="hidden" name="csrf" value="' + csrf + '"><label>Identifiant<input name="username" value="bni" autocomplete="username" autocapitalize="none" spellcheck="false" required></label><label>Mot de passe<input name="password" type="password" autocomplete="current-password" required></label><label class="remember"><input type="checkbox" name="remember" value="yes" checked> Rester connecté sur cet appareil pendant 90 jours</label><button type="submit">Se connecter</button></form></main></body></html>'
+    return Response(body, status=status, mimetype='text/html')
+
+
+@app.get('/admin/connexion.css')
+def organizer_login_css():
+    return Response('''*{box-sizing:border-box}body{margin:0;background:#101722;color:#eef1f6;font:16px/1.6 Arial,sans-serif;min-height:100vh;padding:40px 18px}main{max-width:480px;margin:30px auto;background:#1b2738;padding:34px;border-top:4px solid #cf2030}.brand{font-size:12px;letter-spacing:2px;font-weight:bold;color:#ffa4b3}h1{font-size:30px;line-height:1.25}label{display:block;margin-top:24px}input{display:block;width:100%;padding:14px;margin-top:7px;font:inherit;border:1px solid #8390a2;border-radius:4px;background:white;color:#142033}input:focus{outline:3px solid #ff9fb2}.remember{display:flex;align-items:flex-start;gap:10px;font-size:14px}.remember input{width:20px;height:20px;flex-shrink:0;margin:3px 0 0}button{width:100%;margin-top:26px;padding:15px;border:0;border-radius:4px;background:#cf2030;color:white;font:inherit;font-weight:bold;cursor:pointer}.error{padding:12px;background:#5b1528;color:white;border-left:3px solid #ff9fb2}@media(max-width:500px){body{padding:18px 12px}main{padding:24px 20px;margin:12px auto}}''', mimetype='text/css')
 
 
 def same_origin():
