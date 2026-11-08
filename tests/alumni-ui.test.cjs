@@ -124,7 +124,7 @@ test('official home shows personal OFF figures below invited guests',async()=>{c
  const section=f.w.document.querySelector('section[aria-label="Mon activité OFF"]');assert.ok(section);
  assert.ok(f.text().indexOf('Invité du jeudi')<f.text().indexOf('Mon activité OFF'));
  const cards=[...section.querySelectorAll('.adminStats>div')];assert.equal(cards.length,4);
- assert.deepEqual(cards.map(x=>x.querySelector('span').textContent),['CA généré','CA donné','TAT effectués','Recommandations envoyées']);
+ assert.deepEqual(cards.map(x=>x.querySelector('span').textContent),['CA généré par les membres OFF grâce à moi','Mon CA généré grâce aux membres OFF','TAT effectués','Recommandations envoyées']);
  assert.deepEqual(cards.map(x=>x.querySelector('b').textContent.replace(/[\s€]/g,'')),['1250,50','375,00','4','7']);
  assert.ok(section.textContent.includes('Mandature en cours'));assert.deepEqual(f.errors,[]);
 }finally{f.close();}});
