@@ -1272,7 +1272,7 @@ def create_app():
             next_payload={**meeting_payload(meeting),"assignments":[assignment_payload(a) for a in assignments if official_member(db.session.get(Member,a.member_id))],
                 "guests":[{"id":f"visitor-{g.id}","name":g.name,"company":g.company,"invitedBy":member_name(g.invited_by_member_id)} for g in guests]+
                     [{"id":f"request-{g.id}","name":g.guest_name,"company":None,"invitedBy":member_name(g.member_id)} for g in legacy if g.guest_name and g.guest_name.strip().casefold() not in names]}
-        return {"memberStats":None,"groupStats":None,"nextMeeting":next_payload}
+        return {"memberStats":None,"groupStats":None,"offActivity":member_statistics(account.member_id,active_mandate()),"nextMeeting":next_payload}
 
     @app.get("/api/network/leaderboard")
     def network_leaderboard():

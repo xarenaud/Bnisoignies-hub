@@ -18,7 +18,7 @@ async function mount(environment='MEMBERS',admin=false,url='https://hub.test/',i
   if(p==='/auth/activate')data={status:'ACTIVE'};
   if(p==='/members')data=[{id:2,firstName:'Actif',lastName:'Test',status:'ACTIVE',accountStatus:'ACTIVE',networkType:'OFFICIAL_BNI'},{id:3,firstName:'Ancien',lastName:'Test',status:'OFF',networkType:'OFF'}];
   if(p==='/me/notifications')data={unread:0,items:[]};
-  if(p==='/me/home')data={nextMeeting:null,memberStats:null,groupStats:null};
+  if(p==='/me/home')data={nextMeeting:{date:'2099-02-05',type:'REGULAR',startTime:'07:00',assignments:[],guests:[{id:'guest-1',name:'Invité du jeudi',invitedBy:'Test Membre'}]},memberStats:null,groupStats:null,offActivity:{mandateId:1,mandate:'Mandature en cours',periodStart:'2026-10-01',periodEnd:'2026-11-08',businessGenerated:1250.5,businessReceived:375,oneToOnes:4,referralsGiven:7}};
   if(p==='/alumni-space/me')data={environment,bridgeEnabled:opted,requestedAt:null,stats:null};
   if(p==='/me/alumni-bridge'){opted=JSON.parse(options.body).enabled;data={member:user(),bridgeEnabled:opted};}
   if(p==='/network/config')data={features:{REFERRALS:true,BUSINESS:true,ONE_TO_ONE:true},fullNetworkEnabled:true};
@@ -34,7 +34,7 @@ async function mount(environment='MEMBERS',admin=false,url='https://hub.test/',i
  return {w,errors,text,click,calls,close:()=>w.close()};
 }
 test('official UI only exposes business actions after personal consent',async()=>{const f=await mount();try{await f.click('Participer');assert.ok(f.text().includes('Envoyer une infomerciale'));assert.ok(![...f.w.document.querySelectorAll('button')].some(b=>b.textContent==='MPB'));await f.click('Profil');await f.click('J’active personnellement ma liaison');await f.click('Participer');assert.ok([...f.w.document.querySelectorAll('button')].some(b=>b.textContent==='MPB'));await f.click('Recommandations');assert.ok(f.text().includes('Ancien autorisé'));await f.click('Profil');await f.click('Désactiver ma liaison');await f.click('Participer');assert.ok(![...f.w.document.querySelectorAll('button')].some(b=>b.textContent==='MPB'));assert.deepEqual(f.errors,[]);}finally{f.close();}});
-test('alumni UI has shared planning, exchanges and targeted substitutions',async()=>{const f=await mount('ALUMNI');try{assert.ok(f.text().includes('HUB Anciens'));const nav=[...f.w.document.querySelectorAll('nav button')].map(b=>b.textContent);assert.deepEqual(nav,['Accueil','Planning','Échanges','Suppléances','Profil']);await f.click('Échanges');assert.ok(f.text().includes('Donner une recommandation'));await f.click('Suppléances');assert.ok(f.text().includes('Proposer ma disponibilité'));await f.click('Profil');assert.ok(f.text().includes('Votre espace Anciens'));assert.deepEqual(f.errors,[]);}finally{f.close();}});
+test('alumni UI has shared planning, exchanges and targeted substitutions',async()=>{const f=await mount('ALUMNI');try{assert.ok(f.text().includes('HUB Anciens'));const nav=[...f.w.document.querySelectorAll('nav button')].map(b=>b.textContent);assert.deepEqual(nav,['Accueil','Planning','Échanges','Suppléances','Profil']);assert.equal(f.w.document.querySelectorAll('nav button svg').length,5);assert.equal(f.w.document.querySelectorAll('.actions button svg').length,4);await f.click('Échanges');assert.ok(f.text().includes('Donner une recommandation'));await f.click('Suppléances');assert.ok(f.text().includes('Proposer ma disponibilité'));await f.click('Profil');assert.ok(f.text().includes('Votre espace Anciens'));assert.deepEqual(f.errors,[]);}finally{f.close();}});
 test('inactive former member can request access without exposing the group',async()=>{const f=await mount('INACTIVE');try{assert.ok(f.text().includes('Demander mon passage chez les anciens'));assert.ok(!f.w.document.querySelector('nav'));assert.ok(!f.text().includes('Prochaine réunion'));assert.deepEqual(f.errors,[]);}finally{f.close();}});
 
 test('admin entry and imports share one explicit destination',async()=>{const f=await mount('MEMBERS',true);try{await f.click('Ouvrir');const memberButton=[...f.w.document.querySelectorAll('button')].find(b=>b.querySelector('b')?.textContent==='Membres');assert.ok(memberButton);memberButton.click();await wait();await wait();await f.click(' Ajouter');const select=f.w.document.querySelector('select[name="memberType"]');assert.ok(select);assert.equal(select.options.length,2);assert.equal(f.w.document.querySelectorAll('form select').length,1);select.value='ALUMNI';select.dispatchEvent(new f.w.Event('change',{bubbles:true}));await wait();assert.ok(f.text().includes('Créer un ancien membre'));assert.ok(!f.text().includes('Actif Test'));assert.ok(f.text().includes('Ancien Test'));await f.click(' Importer des anciens');assert.ok(f.text().includes('Choisir la destination'));assert.equal(f.w.document.querySelector('select').value,'ALUMNI');assert.deepEqual(f.errors,[]);}finally{f.close();}});
@@ -118,3 +118,13 @@ test('shared event notifications open their calendar month in both environments'
   assert.deepEqual(f.errors,[]);
  }finally{f.close();}}
 });
+
+
+test('official home shows personal OFF figures below invited guests',async()=>{const f=await mount();try{
+ const section=f.w.document.querySelector('section[aria-label="Mon activité OFF"]');assert.ok(section);
+ assert.ok(f.text().indexOf('Invité du jeudi')<f.text().indexOf('Mon activité OFF'));
+ const cards=[...section.querySelectorAll('.adminStats>div')];assert.equal(cards.length,4);
+ assert.deepEqual(cards.map(x=>x.querySelector('span').textContent),['CA généré','CA donné','TAT effectués','Recommandations envoyées']);
+ assert.deepEqual(cards.map(x=>x.querySelector('b').textContent.replace(/[\s€]/g,'')),['1250,50','375,00','4','7']);
+ assert.ok(section.textContent.includes('Mandature en cours'));assert.deepEqual(f.errors,[]);
+}finally{f.close();}});

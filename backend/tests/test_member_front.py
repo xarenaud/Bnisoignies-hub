@@ -55,6 +55,29 @@ class MemberFrontTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/network/stats',headers=self.headers['former']).status_code,403)
         self.assertEqual(self.client.get('/api/me/home').status_code,401)
 
+    def test_off_activity_is_personal_and_limited_to_current_mandate(self):
+        today=datetime.now(hub.ZoneInfo('Europe/Brussels')).date()
+        mandate=hub.Mandate.query.one();mandate.start_date=today-timedelta(days=15);mandate.end_date=today+timedelta(days=15)
+        for business_day,amount in [(today,125),(today-timedelta(days=30),900),(today+timedelta(days=1),800)]:
+            hub.db.session.add(hub.BusinessThanks(from_member_id=self.ids['off'],credited_member_id=self.ids['active'],amount=amount,business_date=business_day))
+        hub.db.session.add(hub.BusinessThanks(from_member_id=self.ids['active'],credited_member_id=self.ids['off'],amount=75,business_date=today))
+        hub.db.session.add(hub.BusinessThanks(from_member_id=self.ids['off'],credited_member_id=self.ids['admin'],amount=999,business_date=today))
+        hub.db.session.add_all([
+            hub.Referral(from_member_id=self.ids['active'],to_member_id=self.ids['off'],contact_name='Current',created_at=datetime.combine(today,time(8))),
+            hub.Referral(from_member_id=self.ids['active'],to_member_id=self.ids['off'],contact_name='Past',created_at=datetime.combine(today-timedelta(days=30),time(8))),
+            hub.OneToOne(created_by_member_id=self.ids['active'],member_a_id=self.ids['active'],member_b_id=self.ids['off'],meeting_date=today),
+            hub.OneToOne(created_by_member_id=self.ids['active'],member_a_id=self.ids['active'],member_b_id=self.ids['off'],meeting_date=today-timedelta(days=30))])
+        hub.db.session.commit()
+        stats=self.client.get('/api/me/home?memberId='+str(self.ids['admin']),headers=self.headers['active']).get_json()['offActivity']
+        self.assertEqual(stats['memberId'],self.ids['active'])
+        self.assertEqual(stats['businessGenerated'],125)
+        self.assertEqual(stats['businessReceived'],75)
+        self.assertEqual(stats['oneToOnes'],1)
+        self.assertEqual(stats['referralsGiven'],1)
+        # Turning off future interactions must not erase one's recorded activity.
+        hub.db.session.get(hub.Member,self.ids['active']).alumni_bridge_enabled=False;hub.db.session.commit()
+        self.assertEqual(self.client.get('/api/me/home',headers=self.headers['active']).get_json()['offActivity']['businessGenerated'],125)
+
     def test_home_published_duties_guests_and_private_resources(self):
         future=date.today()+timedelta(days=7)
         meeting=hub.Meeting(date=future,start_time=time(7),type='REGULAR',status='PLANNED',location='Lieu test')
