@@ -174,3 +174,31 @@ Le Planning affiche le prochain rôle d'accueil publié du membre et ses collèg
 quelle que soit la page mensuelle sélectionnée. Le bouton des permanences est gardé ;
 chez un ancien, il ouvre ses disponibilités et remplacements. Le mode assistance
 reste en lecture seule, y compris pour la publication d'événements.
+
+## Sessions et confirmations au comité d'accueil
+
+Le Profil des membres, anciens et comptes hors groupe propose la déconnexion
+volontaire de la session courante. La durée des sessions ordinaires reste de
+90 jours, renouvelée par l'usage. En assistance, ce bouton revient au compte
+administrateur et ne déconnecte pas le compte du membre consulté.
+
+Lors de l'acceptation d'une suppléance (appel ouvert ou demande ciblée), le membre
+remplacé garde son e-mail et une confirmation est aussi adressée à Amélie Loedt et
+Simon Vanwymeersch, identités du roster du groupe. Les adresses viennent de leurs
+fiches actuelles (compte actif, sinon adresse membre). Aucun choix sur le seul prénom,
+aucune adresse inventée : un doublon d'identité, une fiche absente ou une adresse
+manquante empêche cet envoi et est journalisé. L'e-mail comporte ancien, membre
+remplacé, date, horaire, lieu et lien Planning. L'acceptation répétée est rejetée et ne
+renvoie pas les e-mails. Les échecs SMTP ne défont pas une suppléance confirmée.
+
+## Correction des encodages
+
+Administration → Corriger les encodages : le comité directeur actuel et le super
+admin peuvent rechercher les MPB, TAT ou recommandations d'un membre, corriger date,
+montant/valeur estimée, durée ou notes, et supprimer un doublon. Un motif est exigé.
+Les modifications sont atomiques et refusent une version devenue obsolète. Les
+valeurs avant/après, le motif et l'auteur restent dans l'audit ; aucune notification
+ni aucun e-mail business n'est renvoyé lors d'une correction. Les statistiques
+relisent les enregistrements corrigés. L'assistance reste en lecture seule.
+Une recommandation ayant des MPB ne peut pas être supprimée directement. Supprimer
+son dernier MPB la remet à PENDING si elle était WON, avec entrée d'historique.

@@ -1,4 +1,4 @@
-import os, secrets, io, smtplib
+import os, secrets, io, smtplib, unicodedata
 from email.message import EmailMessage
 
 # Canonical HUB origin: account tokens must never be linked to another application.
@@ -607,6 +607,40 @@ def create_app():
             app.logger.exception("Substitution email delivery failed")
             return False
 
+    def welcome_replacement_emails(official_id,alumni_id,day,actor,entity,entity_id):
+        # Exact identities resolved from the group's roster, never first-name guesses.
+        identities=[("Amélie","Loedt"),("Simon","Vanwymeersch")]
+        def normalized(value):
+            return " ".join(unicodedata.normalize("NFKD",value or "").encode("ascii","ignore").decode().casefold().split())
+        members=[m for m in Member.query.all() if official_member(m)]
+        meeting=Meeting.query.filter_by(date=day).first()
+        message=f"{member_name(alumni_id)} a accepté de remplacer {member_name(official_id)} le {day.strftime('%d/%m/%Y')}."
+        details=("Heure : "+meeting.start_time.strftime("%H:%M")+"\n" if meeting and meeting.start_time else "")+("Lieu : "+meeting.location+"\n" if meeting and meeting.location else "")
+        sent=0;skipped=0;seen=set()
+        for first,last in identities:
+            matches=[m for m in members if normalized(m.first_name)==normalized(first) and normalized(m.last_name)==normalized(last)]
+            recipient=matches[0] if len(matches)==1 else None
+            outcome="MEMBER_MISSING" if not matches else "AMBIGUOUS_MEMBER"
+            if recipient:
+                email=(recipient.user_account.email if recipient.user_account and recipient.user_account.status=="ACTIVE" else recipient.email) or ""
+                if recipient.id==official_id:outcome="ALREADY_NOTIFIED_AS_REPLACED_MEMBER"
+                elif not email.strip():outcome="EMAIL_MISSING"
+                elif email.strip().lower() in seen:outcome="DUPLICATE_ADDRESS"
+                else:
+                    seen.add(email.strip().lower())
+                    try:
+                        accepted=send_simple_email(email,"HUB — Suppléance confirmée · comité d’accueil",f"Bonjour {recipient.first_name},\n\n{message}\n\n{details}\nLe comité d’accueil peut prévoir la présence du suppléant.\nConsulter le planning :\n{HUB_APP_URL}/?agenda={day.strftime('%Y-%m')}\n")
+                        outcome="SMTP_ACCEPTED" if accepted else "MAIL_NOT_CONFIGURED"
+                        if accepted:sent+=1
+                    except Exception:
+                        outcome="SEND_FAILED"
+                        app.logger.exception("Welcome committee substitution email failed member_id=%s",recipient.id)
+            if outcome!="SMTP_ACCEPTED":skipped+=1
+            audit(actor,"WELCOME_SUBSTITUTION_EMAIL",entity,entity_id,f"recipient={first} {last};member_id={recipient.id if recipient else ''};outcome={outcome}")
+            if outcome in {"MEMBER_MISSING","AMBIGUOUS_MEMBER","EMAIL_MISSING","MAIL_NOT_CONFIGURED","SEND_FAILED"}:app.logger.warning("Welcome substitution email not sent recipient=%s %s outcome=%s",first,last,outcome)
+        db.session.commit()
+        return {"sentCount":sent,"skippedCount":skipped}
+
     def replacement_need_payload(x,viewer_id):
         meeting=future_replacement_meeting(x.date)
         participant=viewer_id in {x.official_id,x.alumni_id}
@@ -677,7 +711,9 @@ def create_app():
         for m in Member.query.all():
             if alumni_member(m) and m.user_account and m.user_account.status=="ACTIVE":notify(m.id,"SUBSTITUTION_FILLED","Votre engagement est confirmé" if m.id==x.alumni_id else "Suppléance pourvue",message,"substitutions")
         audit(account,"REPLACEMENT_NEED_ACCEPTED","replacement_need",x.id);db.session.commit()
-        return {**replacement_need_payload(x,account.member_id),"emailSent":replacement_mail(x.official_id,"Suppléance confirmée",message)}
+        payload={**replacement_need_payload(x,account.member_id),"emailSent":replacement_mail(x.official_id,"Suppléance confirmée",message)}
+        payload["welcomeCommitteeEmails"]=welcome_replacement_emails(x.official_id,x.alumni_id,x.date,account,"replacement_need",x.id)
+        return payload
 
     @app.route("/api/alumni-space/availability",methods=["GET","POST"])
     def alumni_availability():
@@ -775,6 +811,7 @@ def create_app():
             except Exception:
                 app.logger.exception("Substitution confirmation email delivery failed")
                 payload["emailSent"]=False
+            payload["welcomeCommitteeEmails"]=welcome_replacement_emails(x.official_id,x.alumni_id,x.date,account,"substitution",x.id)
         return payload
 
     def member_name(member_id):
@@ -1145,6 +1182,101 @@ def create_app():
         x.status=status;x.notes=(data.get("notes") or "").strip() or None
         audit(account,"ATTENDANCE_UPDATED","attendance",f"{meeting_id}:{member_id}",status);db.session.commit()
         return {"meetingId":meeting_id,"memberId":member_id,"status":status}
+
+    def correction_payload(kind,x):
+        if kind=="business":
+            result={"id":x.id,"kind":kind,"date":x.business_date.isoformat(),"amount":str(x.amount),"fromMember":member_name(x.from_member_id),"toMember":member_name(x.credited_member_id),"notes":x.notes,"referralId":x.referral_id}
+        elif kind=="one-to-ones":
+            result={"id":x.id,"kind":kind,"date":x.meeting_date.isoformat(),"fromMember":member_name(x.member_a_id),"toMember":member_name(x.member_b_id),"durationMinutes":x.duration_minutes,"notes":x.notes}
+        else:
+            result={"id":x.id,"kind":kind,"date":x.created_at.date().isoformat(),"fromMember":member_name(x.from_member_id),"toMember":member_name(x.to_member_id),"contactName":x.contact_name,"estimatedValue":str(x.estimated_value) if x.estimated_value is not None else None,"status":x.status,"notes":x.notes}
+        import hashlib,json
+        result["version"]=hashlib.sha256(json.dumps(result,sort_keys=True).encode()).hexdigest()
+        return result
+
+    @app.get("/api/admin/network-records")
+    def admin_activity_records():
+        account,err=require_admin()
+        if err:return err
+        kind=request.args.get("kind","business")
+        model={"business":BusinessThanks,"one-to-ones":OneToOne,"referrals":Referral}.get(kind)
+        if not model:return {"error":"Type d'encodage invalide."},400
+        try:offset=max(0,int(request.args.get("offset",0)))
+        except ValueError:return {"error":"Page invalide."},400
+        query=model.query
+        text_query=request.args.get("q","").strip()
+        if text_query:
+            ids=db.session.query(Member.id).filter(db.or_((Member.first_name+" "+Member.last_name).ilike("%"+text_query+"%"),Member.company.ilike("%"+text_query+"%")))
+            left=model.from_member_id if kind!="one-to-ones" else model.member_a_id
+            right=model.credited_member_id if kind=="business" else model.to_member_id if kind=="referrals" else model.member_b_id
+            query=query.filter(db.or_(left.in_(ids),right.in_(ids)))
+        date_column=model.business_date if kind=="business" else model.meeting_date if kind=="one-to-ones" else model.created_at
+        rows=query.order_by(date_column.desc(),model.id.desc()).offset(offset).limit(101).all()
+        return {"items":[correction_payload(kind,x) for x in rows[:100]],"hasMore":len(rows)>100,"offset":offset}
+
+    @app.route("/api/admin/network-records/<kind>/<int:record_id>",methods=["PATCH","DELETE"])
+    def correct_activity_record(kind,record_id):
+        account,err=require_admin()
+        if err:return err
+        model={"business":BusinessThanks,"one-to-ones":OneToOne,"referrals":Referral}.get(kind)
+        if not model:return {"error":"Type d'encodage invalide."},400
+        x=model.query.filter_by(id=record_id).with_for_update().first()
+        if not x:return {"error":"Encodage introuvable ou déjà supprimé."},404
+        data=request.get_json(silent=True) or {}
+        reason=str(data.get("reason") or "").strip()
+        if len(reason)<3 or len(reason)>500:return {"error":"Un motif de correction de 3 à 500 caractères est obligatoire."},400
+        before=correction_payload(kind,x)
+        if data.get("version")!=before["version"]:return {"error":"Cet encodage a changé. Rechargez la liste avant de le corriger."},409
+        related=None
+        if request.method=="DELETE":
+            if kind=="referrals":
+                if BusinessThanks.query.filter_by(referral_id=x.id).first():return {"error":"Cette recommandation possède un MPB. Corrigez ou supprimez d’abord ce MPB."},409
+                ReferralStatusHistory.query.filter_by(referral_id=x.id).delete(synchronize_session=False)
+            if kind=="business" and x.referral_id:
+                referral=Referral.query.filter_by(id=x.referral_id).with_for_update().first()
+                other=BusinessThanks.query.filter(BusinessThanks.referral_id==x.referral_id,BusinessThanks.id!=x.id).first()
+                if referral and referral.status=="WON" and not other:
+                    related={"referralId":referral.id,"beforeStatus":referral.status,"afterStatus":"PENDING","closedAt":referral.closed_at.isoformat() if referral.closed_at else None}
+                    referral.status="PENDING";referral.closed_at=None
+                    db.session.add(ReferralStatusHistory(referral_id=referral.id,status="PENDING",note="Correction administrative : suppression du dernier MPB lié. "+reason,changed_by_member_id=account.member_id))
+            db.session.delete(x);after=None
+        else:
+            try:day=date.fromisoformat(str(data.get("date",before["date"])))
+            except ValueError:return {"error":"Date invalide."},400
+            from decimal import Decimal,InvalidOperation
+            field="amount" if kind=="business" else "estimatedValue"
+            amount=None
+            if kind!="one-to-ones" and str(data.get(field) or "").strip():
+                try:
+                    amount=Decimal(str(data[field]))
+                    if not amount.is_finite() or amount<0 or amount>Decimal("9999999999.99") or (kind=="business" and amount==0):raise InvalidOperation()
+                    amount=amount.quantize(Decimal("0.01"))
+                    if kind=="business" and amount<=0:raise InvalidOperation()
+                except (InvalidOperation,ValueError):return {"error":"Montant invalide."},400
+            if kind=="business" and amount is None:return {"error":"Un montant positif est requis."},400
+            duration=None
+            if kind=="one-to-ones" and str(data.get("durationMinutes") or "").strip():
+                try:
+                    duration=int(data["durationMinutes"])
+                    if duration<1 or duration>1440:raise ValueError()
+                except (ValueError,TypeError):return {"error":"Durée invalide (1 à 1440 minutes)."},400
+            if kind=="business":x.amount=amount;x.business_date=day
+            elif kind=="one-to-ones":x.meeting_date=day;x.duration_minutes=duration
+            else:x.created_at=datetime.combine(day,x.created_at.time());x.estimated_value=amount
+            if "notes" in data:x.notes=str(data["notes"] or "").strip() or None
+            db.session.flush();after=correction_payload(kind,x)
+        import json
+        audit(account,"ACTIVITY_DELETED" if after is None else "ACTIVITY_CORRECTED","network_"+kind,record_id,json.dumps({"reason":reason,"before":before,"after":after,"related":related},ensure_ascii=False))
+        db.session.commit()
+        return {"status":"DELETED" if after is None else "CORRECTED","record":after}
+
+    @app.get("/api/admin/network-records/history")
+    def activity_correction_history():
+        account,err=require_admin()
+        if err:return err
+        import json
+        rows=AuditLog.query.filter(AuditLog.action.in_(["ACTIVITY_CORRECTED","ACTIVITY_DELETED"])).order_by(AuditLog.created_at.desc(),AuditLog.id.desc()).limit(100).all()
+        return jsonify([{"id":x.id,"date":x.created_at.isoformat()+"Z","actor":member_name(x.member_id),"action":x.action,"recordId":x.entity_id,"details":json.loads(x.details)} for x in rows])
 
     @app.get("/api/network/stats")
     def network_stats():

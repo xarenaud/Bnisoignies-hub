@@ -30,7 +30,7 @@ class SupportSessionsTests(unittest.TestCase):
         self.assertEqual(self.start('admin').status_code,403)
         account=hub.UserAccount.query.filter_by(member_id=self.ids['former']).one();account.status='INVITED';hub.db.session.commit();self.assertEqual(self.start('former').status_code,400)
         headers,_=self.delegated()
-        for method,path,payload in [('get','/api/members',None),('get','/api/system/features',None),('post','/api/system/mail-test',{}),('get','/api/network/leaderboard',None),('put','/api/me/alumni-bridge',{'enabled':False}),('patch','/api/me/profile',{'firstName':'Changed'}),('post','/api/network/referrals',{}),('post','/api/auth/forgot-password',{'email':'active@example.test'}),('post','/api/auth/logout',{}),('post','/api/system/support-sessions',{'memberId':self.ids['off']})]:
+        for method,path,payload in [('get','/api/admin/network-records',None),('get','/api/admin/network-records/history',None),('patch','/api/admin/network-records/business/1',{}),('delete','/api/admin/network-records/business/1',{}),('get','/api/members',None),('get','/api/system/features',None),('post','/api/system/mail-test',{}),('get','/api/network/leaderboard',None),('put','/api/me/alumni-bridge',{'enabled':False}),('patch','/api/me/profile',{'firstName':'Changed'}),('post','/api/network/referrals',{}),('post','/api/auth/forgot-password',{'email':'active@example.test'}),('post','/api/auth/logout',{}),('post','/api/system/support-sessions',{'memberId':self.ids['off']})]:
             kwargs={'headers':headers}
             if payload is not None:kwargs['json']=payload
             self.assertEqual(getattr(self.client,method)(path,**kwargs).status_code,403,path)

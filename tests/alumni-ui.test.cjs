@@ -128,3 +128,37 @@ test('official home shows personal OFF figures below invited guests',async()=>{c
  assert.deepEqual(cards.map(x=>x.querySelector('b').textContent.replace(/[\s€]/g,'')),['1250,50','375,00','4','7']);
  assert.ok(section.textContent.includes('Mandature en cours'));assert.deepEqual(f.errors,[]);
 }finally{f.close();}});
+
+
+test('members, alumni and inactive profiles can sign out without changing long sessions',async()=>{
+ for(const environment of ['MEMBERS','ALUMNI','INACTIVE']){const f=await mount(environment);try{
+  if(environment!=='INACTIVE')await f.click('Profil');
+  assert.equal(f.w.localStorage.getItem('bni_token'),'fixture');
+  await f.click('Se déconnecter de la session');
+  assert.equal(f.w.localStorage.getItem('bni_token'),null);
+  assert.ok(f.calls.some(c=>c.url.endsWith('/auth/logout')&&c.method==='POST'));
+  assert.ok(f.w.document.querySelector('input[name="email"]'));assert.deepEqual(f.errors,[]);
+ }finally{f.close();}}
+});
+
+test('admin can review and correct then remove a duplicate through the real correction routes',async()=>{
+ const f=await mount('MEMBERS',true);try{
+  let record={id:5,kind:'business',date:'2026-11-08',amount:'100.00',fromMember:'Xavier',toMember:'Jean François Crohin',version:'v1',notes:'Test'};
+  const normal=f.w.fetch;const changes=[];
+  f.w.fetch=async(url,options={})=>{
+   if(url.includes('/admin/network-records')){
+    if(options.method==='PATCH'){const d=JSON.parse(options.body);changes.push(d);record={...record,amount:d.amount,version:'v2'};return {ok:true,json:async()=>({status:'CORRECTED',record})};}
+    if(options.method==='DELETE'){changes.push(JSON.parse(options.body));record=null;return {ok:true,json:async()=>({status:'DELETED'})};}
+    return {ok:true,json:async()=>({items:record?[record]:[],hasMore:false})};
+   }return normal(url,options);
+  };
+  await f.click('Ouvrir');const card=[...f.w.document.querySelectorAll('.adminGrid button')].find(x=>x.querySelector('b')?.textContent==='Corriger les encodages');assert.ok(card);card.click();await wait();await wait();
+  assert.ok(f.text().includes('Jean François Crohin'));await f.click(' Modifier');
+  let form=f.w.document.querySelector('.importCard form');form.elements.amount.value='125.50';form.elements.reason.value='Montant corrigé';
+  form.dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));await wait();await wait();
+  assert.equal(changes[0].amount,'125.50');assert.equal(changes[0].reason,'Montant corrigé');assert.equal(changes[0].version,'v1');
+  await f.click(' Supprimer');form=f.w.document.querySelector('.importCard form');form.elements.reason.value='Doublon de test';
+  form.dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));await wait();await wait();
+  assert.equal(changes[1].version,'v2');assert.equal(changes[1].reason,'Doublon de test');assert.ok(f.text().includes('Aucun encodage trouvé.'));assert.deepEqual(f.errors,[]);
+ }finally{f.close();}
+});
