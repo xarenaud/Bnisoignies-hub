@@ -578,6 +578,18 @@ def create_app():
         member=db.session.get(Member,x.member_id)
         return {"id":x.id,"memberId":x.member_id,"member":member_name(x.member_id),"company":member.company,"date":x.date.isoformat(),"note":x.note,"active":x.active}
 
+    def visible_alumni_availability():
+        today=datetime.now(ZoneInfo("Europe/Brussels")).date()
+        rows=AlumniAvailability.query.filter(AlumniAvailability.date>=today,AlumniAvailability.active==True).order_by(AlumniAvailability.date,AlumniAvailability.id).all()
+        available=[]
+        for offer in rows:
+            member=db.session.get(Member,offer.member_id)
+            if not member or not alumni_member(member) or not member.user_account or member.user_account.status!="ACTIVE":continue
+            if AlumniSubstitution.query.filter_by(alumni_id=member.id,date=offer.date,status="ACCEPTED").first():continue
+            if AlumniReplacementNeed.query.filter_by(alumni_id=member.id,date=offer.date,status="ACCEPTED").first():continue
+            available.append(offer)
+        return available
+
     def lock_replacement_members(*ids):
         # Shared locks across open calls and targeted requests; stable order avoids deadlocks.
         return Member.query.filter(Member.id.in_(ids)).order_by(Member.id).with_for_update().populate_existing().all()
@@ -729,10 +741,9 @@ def create_app():
             if not x:x=AlumniAvailability(member_id=account.member_id,date=day);db.session.add(x)
             x.active=True;x.note=str(data.get("note") or "")[:500]
             db.session.commit();return availability_payload(x),201
-        rows=AlumniAvailability.query.filter(AlumniAvailability.date>=date.today(),AlumniAvailability.active==True).order_by(AlumniAvailability.date).all()
-        if alumni_member(account.member):rows=[x for x in rows if x.member_id==account.member_id]
-        else:rows=[x for x in rows if alumni_member(db.session.get(Member,x.member_id))]
-        rows=[x for x in rows if not AlumniSubstitution.query.filter_by(alumni_id=x.member_id,date=x.date,status="ACCEPTED").first()]
+        if alumni_member(account.member):
+            rows=[x for x in visible_alumni_availability() if x.member_id==account.member_id]
+        else:rows=visible_alumni_availability()
         return jsonify([availability_payload(x) for x in rows])
 
     @app.delete("/api/alumni-space/availability/<int:item_id>")
@@ -1404,7 +1415,7 @@ def create_app():
             next_payload={**meeting_payload(meeting),"assignments":[assignment_payload(a) for a in assignments if official_member(db.session.get(Member,a.member_id))],
                 "guests":[{"id":f"visitor-{g.id}","name":g.name,"company":g.company,"invitedBy":member_name(g.invited_by_member_id)} for g in guests]+
                     [{"id":f"request-{g.id}","name":g.guest_name,"company":None,"invitedBy":member_name(g.member_id)} for g in legacy if g.guest_name and g.guest_name.strip().casefold() not in names]}
-        return {"memberStats":None,"groupStats":None,"offActivity":member_statistics(account.member_id,active_mandate()),"nextMeeting":next_payload}
+        return {"memberStats":None,"groupStats":None,"offActivity":member_statistics(account.member_id,active_mandate()),"availableSubstitutes":[availability_payload(x) for x in visible_alumni_availability()] if network_bridge_enabled(account) else [],"nextMeeting":next_payload}
 
     @app.get("/api/network/leaderboard")
     def network_leaderboard():

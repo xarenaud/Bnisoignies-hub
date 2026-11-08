@@ -18,7 +18,7 @@ async function mount(environment='MEMBERS',admin=false,url='https://hub.test/',i
   if(p==='/auth/activate')data={status:'ACTIVE'};
   if(p==='/members')data=[{id:2,firstName:'Actif',lastName:'Test',status:'ACTIVE',accountStatus:'ACTIVE',networkType:'OFFICIAL_BNI'},{id:3,firstName:'Ancien',lastName:'Test',status:'OFF',networkType:'OFF'}];
   if(p==='/me/notifications')data={unread:0,items:[]};
-  if(p==='/me/home')data={nextMeeting:{date:'2099-02-05',type:'REGULAR',startTime:'07:00',assignments:[],guests:[{id:'guest-1',name:'Invité du jeudi',invitedBy:'Test Membre'}]},memberStats:null,groupStats:null,offActivity:{mandateId:1,mandate:'Mandature en cours',periodStart:'2026-10-01',periodEnd:'2026-11-08',businessGenerated:1250.5,businessReceived:375,oneToOnes:4,referralsGiven:7}};
+  if(p==='/me/home')data={availableSubstitutes:opted?[{id:40,member:'Jean François CROHIN',date:'2099-02-05',note:'Disponible ce jeudi'}]:[],nextMeeting:{date:'2099-02-05',type:'REGULAR',startTime:'07:00',assignments:[],guests:[{id:'guest-1',name:'Invité du jeudi',invitedBy:'Test Membre'}]},memberStats:null,groupStats:null,offActivity:{mandateId:1,mandate:'Mandature en cours',periodStart:'2026-10-01',periodEnd:'2026-11-08',businessGenerated:1250.5,businessReceived:375,oneToOnes:4,referralsGiven:7}};
   if(p==='/alumni-space/me')data={environment,bridgeEnabled:opted,requestedAt:null,stats:null};
   if(p==='/me/alumni-bridge'){opted=JSON.parse(options.body).enabled;data={member:user(),bridgeEnabled:opted};}
   if(p==='/network/config')data={features:{REFERRALS:true,BUSINESS:true,ONE_TO_ONE:true},fullNetworkEnabled:true};
@@ -160,5 +160,22 @@ test('admin can review and correct then remove a duplicate through the real corr
   await f.click(' Supprimer');form=f.w.document.querySelector('.importCard form');form.elements.reason.value='Doublon de test';
   form.dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));await wait();await wait();
   assert.equal(changes[1].version,'v2');assert.equal(changes[1].reason,'Doublon de test');assert.ok(f.text().includes('Aucun encodage trouvé.'));assert.deepEqual(f.errors,[]);
+ }finally{f.close();}
+});
+
+
+test('home announces available alumni and opens the replacement page with refreshed availability',async()=>{
+ const f=await mount();try{
+  assert.ok(!f.text().includes('Jean François CROHIN est disponible'));
+  await f.click('Profil');await f.click('J’active personnellement ma liaison');await f.click('Accueil');
+  const section=f.w.document.querySelector('section[aria-label="Suppléants disponibles"]');assert.ok(section);
+  assert.ok(section.textContent.includes('Jean François CROHIN est disponible pour une suppléance le'));
+  assert.equal(section.querySelector('time').dateTime,'2099-02-05');assert.ok(section.textContent.includes('Disponible ce jeudi'));
+  section.querySelector('button').click();await wait();await wait();assert.ok(f.text().includes('Signaler un besoin de suppléance'));
+  await f.click('Accueil');const normal=f.w.fetch;
+  f.w.fetch=async(url,options)=>{const r=await normal(url,options);if(url.endsWith('/me/home'))return {ok:true,json:async()=>({...await r.json(),availableSubstitutes:[]})};return r;};
+  f.w.dispatchEvent(new f.w.Event('focus'));await wait();await wait();
+  assert.ok(!f.w.document.querySelector('section[aria-label="Suppléants disponibles"]'));
+  assert.deepEqual(f.errors,[]);
  }finally{f.close();}
 });

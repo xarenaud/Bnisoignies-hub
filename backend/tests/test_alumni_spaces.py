@@ -137,6 +137,32 @@ class AlumniSpacesTests(unittest.TestCase):
         self.assertEqual(self.client.patch(f'/api/alumni-space/substitutions/{rid}',headers=self.headers['off2'],json={'status':'ACCEPTED'}).status_code,404)
         self.assertEqual(self.client.patch(f'/api/alumni-space/substitutions/{rid}',headers=self.headers['off'],json={'status':'ACCEPTED'}).status_code,200)
         self.assertEqual(self.post('/api/alumni-space/substitutions',{'availabilityId':aid},'active2').status_code,409)
+    def test_home_availability_respects_consent_accounts_and_both_claim_paths(self):
+        day=date.today()+timedelta(days=7)
+        hub.db.session.add(hub.Meeting(date=day,start_time=time(7),type='REGULAR',status='PLANNED'))
+        offer=hub.AlumniAvailability(member_id=self.ids['off'],date=day,active=True,note='Disponible pour remplacer')
+        past=hub.AlumniAvailability(member_id=self.ids['off2'],date=date.today()-timedelta(days=1),active=True)
+        hub.db.session.add_all([offer,past]);hub.db.session.commit()
+        self.assertEqual(self.get('/api/me/home').get_json()['availableSubstitutes'],[])
+        self.bridge()
+        rows=self.get('/api/me/home').get_json()['availableSubstitutes']
+        self.assertEqual([r['memberId'] for r in rows],[self.ids['off']])
+        self.assertEqual(rows[0]['date'],day.isoformat())
+        offer.active=False;hub.db.session.commit()
+        self.assertEqual(self.get('/api/me/home').get_json()['availableSubstitutes'],[])
+        offer.active=True;member=hub.db.session.get(hub.Member,self.ids['off']);member.user_account.status='INVITED';hub.db.session.commit()
+        self.assertEqual(self.get('/api/me/home').get_json()['availableSubstitutes'],[])
+        member.user_account.status='ACTIVE';hub.db.session.commit()
+        accepted=hub.AlumniReplacementNeed(official_id=self.ids['active'],alumni_id=self.ids['off'],date=day,status='ACCEPTED')
+        hub.db.session.add(accepted);hub.db.session.commit()
+        self.assertEqual(self.get('/api/me/home').get_json()['availableSubstitutes'],[])
+        self.assertEqual(self.get('/api/alumni-space/availability').get_json(),[])
+        accepted.status='CANCELLED';hub.db.session.commit()
+        self.assertEqual(len(self.get('/api/me/home').get_json()['availableSubstitutes']),1)
+        targeted=hub.AlumniSubstitution(official_id=self.ids['active'],alumni_id=self.ids['off'],availability_id=offer.id,date=day,status='ACCEPTED')
+        hub.db.session.add(targeted);hub.db.session.commit()
+        self.assertEqual(self.get('/api/me/home').get_json()['availableSubstitutes'],[])
+
     def test_legacy_admin_switch_requires_a_personal_departure_request(self):
         target=self.ids['active']
         self.assertEqual(self.post(f'/api/members/{target}/network',{'networkType':'OFF'},'admin').status_code,400)
