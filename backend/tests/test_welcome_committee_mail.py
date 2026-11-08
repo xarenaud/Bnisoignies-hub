@@ -49,3 +49,14 @@ class WelcomeCommitteeMailTests(unittest.TestCase):
         with patch.dict(os.environ,{'SMTP_HOST':'smtp.test','SMTP_FROM':'hub@example.test','SMTP_USER':'','SMTP_SSL':'false'}),patch.object(hub.smtplib,'SMTP') as smtp:
             r=self.post('/api/alumni-space/replacement-needs/'+str(rid),{},'off');self.assertEqual(r.status_code,200)
             self.assertEqual({c.args[0]['To'] for c in smtp.return_value.send_message.call_args_list},{'active@example.test','amelie@example.test'})
+    def test_official_accepts_published_offer_once_and_notifies_all_parties(self):
+        offer=self.post('/api/alumni-space/availability',{'date':self.day.isoformat()},'off').get_json()
+        path='/api/alumni-space/availability/'+str(offer['id'])+'/accept'
+        self.assertEqual(self.post(path,{},'off').status_code,403)
+        with patch.dict(os.environ,{'SMTP_HOST':'smtp.test','SMTP_FROM':'hub@example.test','SMTP_USER':'','SMTP_SSL':'false'}),patch.object(hub.smtplib,'SMTP') as smtp:
+            r=self.post(path,{});self.assertEqual(r.status_code,201,r.get_json());self.assertEqual(r.get_json()['status'],'ACCEPTED')
+            self.assertEqual({c.args[0]['To'] for c in smtp.return_value.send_message.call_args_list},{'active@example.test','off@example.test','amelie@example.test','simon@example.test'})
+            self.assertEqual(self.post(path,{}).status_code,409)
+            self.bridge('active2');self.assertEqual(self.post(path,{},'active2').status_code,409)
+            self.assertEqual(smtp.return_value.send_message.call_count,4)
+        self.assertEqual(self.get('/api/alumni-space/availability').get_json(),[])

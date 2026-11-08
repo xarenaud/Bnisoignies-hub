@@ -189,3 +189,22 @@ test('home keeps one compact link and replacement availability is grouped by asc
   assert.deepEqual(f.errors,[]);
  }finally{f.close();}
 });
+
+test('selecting a meeting suggests available alumni and refusal keeps the open-call option',async()=>{
+ const f=await mount();try{
+  const original=f.w.fetch;let claimed=false;
+  f.w.fetch=async(url,options={})=>{
+   if(url.endsWith('/alumni-space/availability'))return {ok:true,json:async()=>claimed?[]:[{id:51,member:'Jean François Crohin',date:'2099-02-05'}]};
+   if(url.endsWith('/alumni-space/availability/51/accept')){claimed=true;return {ok:true,json:async()=>({status:'ACCEPTED'})};}
+   return original(url,options);
+  };
+  await f.click('Profil');await f.click('J’active personnellement ma liaison');await f.click('Participer');await f.click('Solliciter une suppléance');
+  let select=f.w.document.querySelector('select[name="date"]');select.value='2099-02-05';select.dispatchEvent(new f.w.Event('change',{bubbles:true}));await wait();
+  assert.ok(f.text().includes('Jean François Crohin a proposé une suppléance pour cette date.'));
+  let publish=[...f.w.document.querySelectorAll('button')].find(x=>x.textContent==='Publier mon besoin de suppléance');assert.ok(publish.disabled);
+  await f.click('Refuser');assert.equal(publish.disabled,false);
+  select.value='';select.dispatchEvent(new f.w.Event('change',{bubbles:true}));await wait();select.value='2099-02-05';select.dispatchEvent(new f.w.Event('change',{bubbles:true}));await wait();
+  await f.click('Accepter');assert.ok(claimed);assert.ok(f.text().includes('Jean François Crohin assurera votre suppléance'));
+  assert.deepEqual(f.errors,[]);
+ }finally{f.close();}
+});

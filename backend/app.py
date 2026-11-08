@@ -785,6 +785,34 @@ def create_app():
         db.session.add(x);notify(target.id,"SUBSTITUTION_REQUEST","Demande de suppléance",member_name(account.member_id)+" vous sollicite pour le "+availability.date.isoformat(),"substitutions")
         db.session.commit();return substitution_payload(x),201
 
+    @app.post("/api/alumni-space/availability/<int:item_id>/accept")
+    def accept_available_substitute(item_id):
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        if not network_bridge_enabled(account):return {"error":"Activez personnellement la liaison avec les anciens."},403
+        offer=db.session.get(AlumniAvailability,item_id)
+        if not offer:return {"error":"Disponibilité introuvable."},404
+        lock_replacement_members(account.member_id,offer.member_id)
+        offer=AlumniAvailability.query.filter_by(id=item_id).with_for_update().populate_existing().first()
+        member=db.session.get(Member,offer.member_id)
+        if not network_bridge_enabled(account) or not offer.active or not alumni_member(member) or not member.user_account or member.user_account.status!="ACTIVE":return {"error":"Cette disponibilité n'est plus proposée."},409
+        if not future_replacement_meeting(offer.date):return {"error":"Cette réunion n'est plus à venir ou a été annulée."},400
+        if replacement_conflict(offer.date,account.member_id,member.id):return {"error":"Un remplacement est déjà confirmé pour cette date."},409
+        pending=AlumniSubstitution.query.filter_by(official_id=account.member_id,date=offer.date,status="REQUESTED").all()
+        for row in pending:row.status="CANCELLED"
+        opened=AlumniReplacementNeed.query.filter_by(official_id=account.member_id,date=offer.date,status="OPEN").with_for_update().first()
+        if opened:opened.status="CANCELLED"
+        x=AlumniSubstitution(official_id=account.member_id,alumni_id=member.id,availability_id=offer.id,date=offer.date,status="ACCEPTED")
+        db.session.add(x);db.session.flush()
+        message=f"{member_name(account.member_id)} a accepté la proposition de suppléance de {member_name(member.id)} pour le {offer.date.strftime('%d/%m/%Y')}. Le remplacement est confirmé."
+        for mid in {account.member_id,member.id}:notify(mid,"SUBSTITUTION_ACCEPTED","Suppléance confirmée",message,"substitutions")
+        audit(account,"AVAILABLE_SUBSTITUTE_ACCEPTED","substitution",x.id,f"availability_id={offer.id}");db.session.commit()
+        payload=substitution_payload(x)
+        payload["emailSent"]=replacement_mail(account.member_id,"Suppléance confirmée",message)
+        payload["alumniEmailSent"]=replacement_mail(member.id,"Votre proposition de suppléance est acceptée",message)
+        payload["welcomeCommitteeEmails"]=welcome_replacement_emails(account.member_id,member.id,offer.date,account,"substitution",x.id)
+        return payload,201
+
     @app.patch("/api/alumni-space/substitutions/<int:item_id>")
     def respond_alumni_substitution(item_id):
         account,_=bearer_account()
