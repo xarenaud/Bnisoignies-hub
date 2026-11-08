@@ -633,7 +633,7 @@ def create_app():
 
     def announcement_payload(x,account):
         interest=AnnouncementInterest.query.filter_by(announcement_id=x.id,member_id=account.member_id).first()
-        return {"id":x.id,"memberId":x.member_id,"member":member_name(x.member_id),"startDate":x.start_date.isoformat(),"endDate":x.end_date.isoformat(),"subject":x.subject,"description":x.description,"interested":bool(interest and interest.active),"interestCount":AnnouncementInterest.query.filter_by(announcement_id=x.id,active=True).count(),"own":x.member_id==account.member_id}
+        return {"id":x.id,"memberId":x.member_id,"member":member_name(x.member_id),"startDate":x.start_date.isoformat(),"endDate":x.end_date.isoformat(),"subject":x.subject,"description":x.description,"createdAt":x.created_at.isoformat()+"Z","interested":bool(interest and interest.active),"interestCount":AnnouncementInterest.query.filter_by(announcement_id=x.id,active=True).count(),"own":x.member_id==account.member_id}
 
     @app.route("/api/announcements",methods=["GET","POST"])
     def announcements():

@@ -235,9 +235,19 @@ test('breaking news is shared by both environments, opens from Participate and t
    return normal(url,options);
   };
   if(environment==='MEMBERS'){await f.click('Participer');await f.click('Annonce');}else await f.click('BREAKING NEWS');
-  assert.ok(f.w.document.querySelector('.breakingNewsButton'));assert.ok(f.w.document.querySelector('[role="dialog"]'));
+  assert.ok(f.w.document.querySelector('.breakingNewsButton'));assert.ok(f.w.document.querySelector('[data-page="announcements"]'));
   assert.ok(f.text().includes('Places à vendre'));await f.click('Ça m’intéresse · 0');assert.ok(f.w.document.querySelector('.interestButton.interested'));assert.ok(interested);
-  await f.click(' Publier une annonce');const form=f.w.document.querySelector('.breakingNewsPanel form');form.elements.subject.value='Je vends';form.elements.description.value='Un bureau';form.dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));await wait();await wait();
+  await f.click(' Publier une annonce');const form=f.w.document.querySelector('.breakingNewsPage form');form.elements.subject.value='Je vends';form.elements.description.value='Un bureau';form.dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));await wait();await wait();
   assert.equal(posted.subject,'Je vends');assert.equal(posted.durationDays,31);assert.deepEqual(f.errors,[]);
  }finally{f.close();}}
+});
+
+
+test('breaking news uses a full page and can sort publication dates in both directions',async()=>{
+ const f=await mount();try{const normal=f.w.fetch;f.w.fetch=async(url,options)=>url.endsWith('/announcements')?{ok:true,json:async()=>[{id:1,subject:'Récente',createdAt:'2026-11-08T10:00:00Z',startDate:'2026-11-08',endDate:'2026-12-09',member:'A'},{id:2,subject:'Ancienne',createdAt:'2026-11-01T10:00:00Z',startDate:'2026-11-01',endDate:'2026-12-02',member:'B'}]}:normal(url,options);
+ await f.click('BREAKING NEWS');assert.ok(f.w.location.search.includes('announcements=1'));assert.ok(!f.w.document.querySelector('[role="dialog"]'));
+ let titles=()=>[...f.w.document.querySelectorAll('.breakingNewsPage article b')].map(x=>x.textContent);assert.deepEqual(titles(),['Récente','Ancienne']);
+ const select=f.w.document.querySelector('[aria-label="Trier les annonces"]');select.value='oldest';select.dispatchEvent(new f.w.Event('change',{bubbles:true}));await wait();assert.deepEqual(titles(),['Ancienne','Récente']);
+ select.value='latest';select.dispatchEvent(new f.w.Event('change',{bubbles:true}));await wait();assert.deepEqual(titles(),['Récente','Ancienne']);assert.deepEqual(f.errors,[]);
+ }finally{f.close();}
 });
