@@ -238,6 +238,6 @@ test('breaking news is shared by both environments, opens from Participate and t
   assert.ok(f.w.document.querySelector('.breakingNewsButton'));assert.ok(f.w.document.querySelector('[role="dialog"]'));
   assert.ok(f.text().includes('Places à vendre'));await f.click('Ça m’intéresse · 0');assert.ok(f.w.document.querySelector('.interestButton.interested'));assert.ok(interested);
   await f.click(' Publier une annonce');const form=f.w.document.querySelector('.breakingNewsPanel form');form.elements.subject.value='Je vends';form.elements.description.value='Un bureau';form.dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));await wait();await wait();
-  assert.equal(posted.subject,'Je vends');assert.equal(posted.durationDays,1);assert.deepEqual(f.errors,[]);
+  assert.equal(posted.subject,'Je vends');assert.equal(posted.durationDays,31);assert.deepEqual(f.errors,[]);
  }finally{f.close();}}
 });

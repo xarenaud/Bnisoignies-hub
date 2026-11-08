@@ -645,12 +645,9 @@ def create_app():
             return jsonify([announcement_payload(x,account) for x in rows])
         data=request.get_json(silent=True) or {}
         try:
-            start=date.fromisoformat(str(data.get("date","")));days=int(data.get("durationDays",0))
-            import calendar
-            year=start.year+(start.month==12);month=start.month%12+1
-            limit=date(year,month,min(start.day,calendar.monthrange(year,month)[1]))
-            if start<today or days<1 or days>(limit-start).days:raise ValueError()
-        except (ValueError,TypeError,OverflowError):return {"error":"Choisissez une date à venir et une durée comprise entre un jour et un mois maximum."},400
+            start=date.fromisoformat(str(data.get("date","")));days=int(data.get("durationDays",31))
+            if start<today or days<1 or days>31:raise ValueError()
+        except (ValueError,TypeError,OverflowError):return {"error":"Choisissez une date à venir et une durée comprise entre 1 et 31 jours."},400
         subject=str(data.get("subject") or "").strip();description=str(data.get("description") or "").strip()
         if not subject or len(subject)>180 or not description or len(description)>4000:return {"error":"Sujet (180 caractères max.) et descriptif (4000 caractères max.) obligatoires."},400
         x=Announcement(member_id=account.member_id,start_date=start,end_date=start+timedelta(days=days),subject=subject,description=description)

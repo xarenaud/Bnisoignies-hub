@@ -19,7 +19,7 @@ class AnnouncementTests(unittest.TestCase):
     def test_date_duration_expiry_and_permissions(self):
         self.assertEqual(self.post(durationDays=0).status_code,400)
         self.assertEqual(self.post(durationDays=32).status_code,400)
-        self.assertEqual(self.post(date='2027-02-01',durationDays=29).status_code,400)
+        scheduled=self.post(date='2027-02-01',durationDays=29);self.assertEqual(scheduled.status_code,201);hub.db.session.delete(hub.db.session.get(hub.Announcement,scheduled.get_json()['id']));hub.db.session.commit()
         self.assertEqual(self.post('former').status_code,403)
         self.assertEqual(self.client.get('/api/announcements').status_code,401)
         rid=self.post().get_json()['id'];row=hub.db.session.get(hub.Announcement,rid);row.end_date=self.today;hub.db.session.commit()

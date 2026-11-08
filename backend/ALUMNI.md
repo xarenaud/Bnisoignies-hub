@@ -233,7 +233,7 @@ Les identités des validateurs sont figées par identifiant membre lors de la mi
 
 Les membres et anciens actifs peuvent publier une annonce depuis Participer/Annonce,
 les raccourcis Anciens ou le bouton rouge et blanc à côté du profil. Le formulaire
-contient date de début, durée en jours (un mois calendaire maximum), sujet et descriptif.
+contient date de début, durée en jours (31 jours maximum, 31 par défaut), sujet et descriptif.
 La date de fin est exclusive ; les annonces expirées ou retirées disparaissent du fil.
 Les annonces futures restent visibles par leur auteur comme annonces programmées.
 Le partage est indépendant de la liaison business avec les anciens.
