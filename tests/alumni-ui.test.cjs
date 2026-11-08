@@ -225,3 +225,19 @@ test('alumnus can convert availability to a guest request and reviewer link open
  }finally{f.close();}
  const review=await mount('MEMBERS',true,'https://hub.test/?guestVisits=1');try{assert.ok(review.text().includes('Valider les invitations des anciens'));assert.deepEqual(review.errors,[]);}finally{review.close();}
 });
+
+test('breaking news is shared by both environments, opens from Participate and toggles interest',async()=>{
+ for(const environment of ['MEMBERS','ALUMNI']){const f=await mount(environment);try{
+  const normal=f.w.fetch;let interested=false;let posted=null;
+  f.w.fetch=async(url,options={})=>{
+   if(url.endsWith('/announcements')){if(options.method==='POST')posted=JSON.parse(options.body);return {ok:true,json:async()=>options.method==='POST'?{id:2}:[{id:1,member:'Autre membre',subject:'Places à vendre',description:'Pour le concert',startDate:'2026-11-08',endDate:'2026-12-08',interested,interestCount:interested?1:0,own:false}]};}
+   if(url.endsWith('/announcements/1/interest')){interested=JSON.parse(options.body).interested;return {ok:true,json:async()=>({})};}
+   return normal(url,options);
+  };
+  if(environment==='MEMBERS'){await f.click('Participer');await f.click('Annonce');}else await f.click('BREAKING NEWS');
+  assert.ok(f.w.document.querySelector('.breakingNewsButton'));assert.ok(f.w.document.querySelector('[role="dialog"]'));
+  assert.ok(f.text().includes('Places à vendre'));await f.click('Ça m’intéresse · 0');assert.ok(f.w.document.querySelector('.interestButton.interested'));assert.ok(interested);
+  await f.click(' Publier une annonce');const form=f.w.document.querySelector('.breakingNewsPanel form');form.elements.subject.value='Je vends';form.elements.description.value='Un bureau';form.dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));await wait();await wait();
+  assert.equal(posted.subject,'Je vends');assert.equal(posted.durationDays,1);assert.deepEqual(f.errors,[]);
+ }finally{f.close();}}
+});

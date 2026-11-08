@@ -228,3 +228,18 @@ comme suppléant. Une demande d'invitation en attente peut être retirée par so
 une inscription déjà acceptée doit être modifiée avec le comité.
 
 Les identités des validateurs sont figées par identifiant membre lors de la mise en service (guest_visit_reviewers). Modifier un prénom ou un nom dans son profil ne donne aucun droit de validation et ne détourne pas les e-mails.
+
+## BREAKING NEWS
+
+Les membres et anciens actifs peuvent publier une annonce depuis Participer/Annonce,
+les raccourcis Anciens ou le bouton rouge et blanc à côté du profil. Le formulaire
+contient date de début, durée en jours (un mois calendaire maximum), sujet et descriptif.
+La date de fin est exclusive ; les annonces expirées ou retirées disparaissent du fil.
+Les annonces futures restent visibles par leur auteur comme annonces programmées.
+Le partage est indépendant de la liaison business avec les anciens.
+
+Le pouce est un état explicite (PUT interested=true/false), rouge lorsqu'actif. Seul
+l'auteur reçoit une notification lors d'un passage de non intéressé à intéressé ;
+répéter la même requête ne double pas la notification. Un auteur ne peut pas liker
+sa propre annonce. Seul l'auteur peut la retirer ; le mode assistance reste en lecture
+seule. Aucune annonce n'envoie automatiquement de mailing.

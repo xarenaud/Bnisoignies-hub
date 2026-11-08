@@ -345,6 +345,23 @@ class NetworkVisitor(db.Model):
     notes=db.Column(db.Text)
     created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False,index=True)
 
+class Announcement(db.Model):
+    __tablename__="announcements"
+    id=db.Column(db.Integer,primary_key=True)
+    member_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    start_date=db.Column(db.Date,nullable=False)
+    end_date=db.Column(db.Date,nullable=False,index=True)
+    subject=db.Column(db.String(180),nullable=False)
+    description=db.Column(db.Text,nullable=False)
+    active=db.Column(db.Boolean,nullable=False,default=True)
+    created_at=db.Column(db.DateTime,nullable=False,default=datetime.utcnow)
+
+class AnnouncementInterest(db.Model):
+    __tablename__="announcement_interests"
+    announcement_id=db.Column(db.Integer,db.ForeignKey("announcements.id"),primary_key=True)
+    member_id=db.Column(db.Integer,db.ForeignKey("members.id"),primary_key=True)
+    active=db.Column(db.Boolean,nullable=False,default=False)
+
 class GuestVisitReviewer(db.Model):
     __tablename__="guest_visit_reviewers"
     key=db.Column(db.String(20),primary_key=True)
@@ -607,6 +624,66 @@ def create_app():
             if AlumniReplacementNeed.query.filter_by(alumni_id=member.id,date=offer.date,status="ACCEPTED").first():continue
             available.append(offer)
         return available
+
+    def announcement_account():
+        account,_=bearer_account()
+        if not account:return None,({"error":"Authentification requise."},401)
+        if not (official_member(account.member) or alumni_member(account.member)):return None,({"error":"Réservé aux membres et anciens actifs."},403)
+        return account,None
+
+    def announcement_payload(x,account):
+        interest=AnnouncementInterest.query.filter_by(announcement_id=x.id,member_id=account.member_id).first()
+        return {"id":x.id,"memberId":x.member_id,"member":member_name(x.member_id),"startDate":x.start_date.isoformat(),"endDate":x.end_date.isoformat(),"subject":x.subject,"description":x.description,"interested":bool(interest and interest.active),"interestCount":AnnouncementInterest.query.filter_by(announcement_id=x.id,active=True).count(),"own":x.member_id==account.member_id}
+
+    @app.route("/api/announcements",methods=["GET","POST"])
+    def announcements():
+        account,err=announcement_account()
+        if err:return err
+        today=datetime.now(ZoneInfo("Europe/Brussels")).date()
+        if request.method=="GET":
+            rows=Announcement.query.filter(db.or_(Announcement.start_date<=today,Announcement.member_id==account.member_id),Announcement.end_date>today,Announcement.active==True).order_by(Announcement.created_at.desc(),Announcement.id.desc()).all()
+            return jsonify([announcement_payload(x,account) for x in rows])
+        data=request.get_json(silent=True) or {}
+        try:
+            start=date.fromisoformat(str(data.get("date","")));days=int(data.get("durationDays",0))
+            import calendar
+            year=start.year+(start.month==12);month=start.month%12+1
+            limit=date(year,month,min(start.day,calendar.monthrange(year,month)[1]))
+            if start<today or days<1 or days>(limit-start).days:raise ValueError()
+        except (ValueError,TypeError,OverflowError):return {"error":"Choisissez une date à venir et une durée comprise entre un jour et un mois maximum."},400
+        subject=str(data.get("subject") or "").strip();description=str(data.get("description") or "").strip()
+        if not subject or len(subject)>180 or not description or len(description)>4000:return {"error":"Sujet (180 caractères max.) et descriptif (4000 caractères max.) obligatoires."},400
+        x=Announcement(member_id=account.member_id,start_date=start,end_date=start+timedelta(days=days),subject=subject,description=description)
+        db.session.add(x);db.session.flush();audit(account,"ANNOUNCEMENT_CREATED","announcement",x.id);db.session.commit()
+        return announcement_payload(x,account),201
+
+    @app.put("/api/announcements/<int:item_id>/interest")
+    def announcement_interest(item_id):
+        account,err=announcement_account()
+        if err:return err
+        # Serialize toggles, including first clicks, to prevent duplicate rows/notices.
+        x=Announcement.query.filter_by(id=item_id).with_for_update().first()
+        today=datetime.now(ZoneInfo("Europe/Brussels")).date()
+        if not x or not x.active or not (x.start_date<=today<x.end_date):return {"error":"Cette annonce n’est plus disponible."},404
+        if x.member_id==account.member_id:return {"error":"Vous êtes l’auteur de cette annonce."},403
+        data=request.get_json(silent=True) or {}
+        if type(data.get("interested")) is not bool:return {"error":"Choix invalide."},400
+        interested=data["interested"]
+        row=AnnouncementInterest.query.filter_by(announcement_id=x.id,member_id=account.member_id).first()
+        was_active=bool(row and row.active)
+        if not row:row=AnnouncementInterest(announcement_id=x.id,member_id=account.member_id);db.session.add(row)
+        row.active=interested
+        if interested and not was_active:notify(x.member_id,"ANNOUNCEMENT_INTEREST",member_name(account.member_id)+" est intéressé par votre annonce",x.subject,"announcements")
+        db.session.commit();return announcement_payload(x,account)
+
+    @app.delete("/api/announcements/<int:item_id>")
+    def withdraw_announcement(item_id):
+        account,err=announcement_account()
+        if err:return err
+        x=db.session.get(Announcement,item_id)
+        if not x:return {"error":"Annonce introuvable."},404
+        if x.member_id!=account.member_id:return {"error":"Cette annonce appartient à un autre membre."},403
+        x.active=False;audit(account,"ANNOUNCEMENT_WITHDRAWN","announcement",x.id);db.session.commit();return {"status":"WITHDRAWN"}
 
     def guest_reviewers():
         members=[db.session.get(Member,row.member_id) for row in GuestVisitReviewer.query.all()]
