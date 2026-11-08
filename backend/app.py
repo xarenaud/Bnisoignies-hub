@@ -345,6 +345,23 @@ class NetworkVisitor(db.Model):
     notes=db.Column(db.Text)
     created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False,index=True)
 
+class GuestVisitReviewer(db.Model):
+    __tablename__="guest_visit_reviewers"
+    key=db.Column(db.String(20),primary_key=True)
+    member_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,unique=True)
+
+class AlumniGuestVisit(db.Model):
+    __tablename__="alumni_guest_visits"
+    id=db.Column(db.Integer,primary_key=True)
+    member_id=db.Column(db.Integer,db.ForeignKey("members.id"),nullable=False,index=True)
+    mandate_id=db.Column(db.Integer,db.ForeignKey("mandates.id"),nullable=False,index=True)
+    date=db.Column(db.Date,nullable=False,index=True)
+    message=db.Column(db.Text)
+    status=db.Column(db.String(20),nullable=False,default="PENDING")
+    decision_reason=db.Column(db.String(500))
+    decided_by=db.Column(db.Integer,db.ForeignKey("user_accounts.id"))
+    created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
+
 class AttendanceRecord(db.Model):
     __tablename__="attendance_records"
     id=db.Column(db.Integer,primary_key=True)
@@ -585,10 +602,104 @@ def create_app():
         for offer in rows:
             member=db.session.get(Member,offer.member_id)
             if not member or not alumni_member(member) or not member.user_account or member.user_account.status!="ACTIVE":continue
+            if AlumniGuestVisit.query.filter_by(member_id=member.id,date=offer.date,status="APPROVED").first():continue
             if AlumniSubstitution.query.filter_by(alumni_id=member.id,date=offer.date,status="ACCEPTED").first():continue
             if AlumniReplacementNeed.query.filter_by(alumni_id=member.id,date=offer.date,status="ACCEPTED").first():continue
             available.append(offer)
         return available
+
+    def guest_reviewers():
+        members=[db.session.get(Member,row.member_id) for row in GuestVisitReviewer.query.all()]
+        return [m for m in members if m and official_member(m)]
+
+    def can_review_guest(account):
+        return bool(account.is_system_admin or (official_member(account.member) and GuestVisitReviewer.query.filter(GuestVisitReviewer.member_id==account.member_id,GuestVisitReviewer.key.in_(["amelie","simon"])).first()))
+
+    def guest_visit_payload(x):
+        return {"id":x.id,"member":member_name(x.member_id),"memberId":x.member_id,"date":x.date.isoformat(),"message":x.message,"status":x.status,"decisionReason":x.decision_reason,"mandateId":x.mandate_id}
+
+    def guest_visit_mail(member,subject,body):
+        try:return send_simple_email(member.user_account.email if member.user_account and member.user_account.status=="ACTIVE" else member.email,"HUB — "+subject,"Bonjour "+member.first_name+",\n\n"+body)
+        except Exception:app.logger.exception("Guest visit email failed member_id=%s",member.id);return False
+
+    @app.route("/api/alumni-visits",methods=["GET","POST"])
+    def alumni_guest_visits():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        if not alumni_member(account.member):return {"error":"Réservé aux anciens membres."},403
+        if request.method=="GET":
+            rows=AlumniGuestVisit.query.filter_by(member_id=account.member_id).order_by(AlumniGuestVisit.date.desc(),AlumniGuestVisit.id.desc()).all()
+            meetings=Meeting.query.filter(Meeting.date>=datetime.now(ZoneInfo("Europe/Brussels")).date(),Meeting.type!="NO_MEETING",Meeting.status!="CANCELLED").order_by(Meeting.date).all()
+            return {"items":[guest_visit_payload(x) for x in rows],"meetings":[{"date":m.date.isoformat(),"startTime":m.start_time.strftime("%H:%M") if m.start_time else None} for m in meetings if future_replacement_meeting(m.date)],"limit":2}
+        data=request.get_json(silent=True) or {}
+        try:day=date.fromisoformat(data.get("date",""))
+        except (ValueError,TypeError):return {"error":"Date invalide."},400
+        lock_replacement_members(account.member_id)
+        if not future_replacement_meeting(day):return {"error":"Choisissez une réunion à venir programmée."},400
+        mandate=active_mandate(day)
+        if not mandate:return {"error":"Aucune mandature configurée pour cette date."},400
+        existing=AlumniGuestVisit.query.filter(AlumniGuestVisit.member_id==account.member_id,AlumniGuestVisit.date==day,AlumniGuestVisit.status.in_(["PENDING","APPROVED"])).first()
+        if existing:return guest_visit_payload(existing),200
+        if AlumniGuestVisit.query.filter_by(member_id=account.member_id,mandate_id=mandate.id).count()>=2:return {"error":"Vous avez déjà utilisé vos deux demandes d’invitation pour cette mandature."},409
+        if replacement_conflict(day,-1,account.member_id):return {"error":"Une suppléance est déjà confirmée pour vous à cette date. Contactez le comité pour modifier cet engagement."},409
+        availability_id=data.get("availabilityId")
+        if availability_id:
+            offer=AlumniAvailability.query.filter_by(id=availability_id,member_id=account.member_id).with_for_update().first()
+            if not offer or offer.date!=day or not offer.active:return {"error":"Disponibilité introuvable ou retirée."},400
+            offer.active=False
+        for row in AlumniSubstitution.query.filter_by(alumni_id=account.member_id,date=day,status="REQUESTED").all():
+            row.status="CANCELLED"
+            notify(row.official_id,"SUBSTITUTION_CANCELLED","Proposition de suppléance retirée",member_name(account.member_id)+" souhaite venir comme invité le "+day.isoformat()+". Sa suppléance n’est plus proposée.","substitutions")
+        x=AlumniGuestVisit(member_id=account.member_id,date=day,mandate_id=mandate.id,message=str(data.get("message") or "")[:2000],status="PENDING")
+        db.session.add(x);db.session.flush()
+        reviewers=guest_reviewers()
+        for member in reviewers:notify(member.id,"ALUMNI_GUEST_REQUEST","Demande de venue comme invité",member_name(account.member_id)+" demande à venir le "+day.strftime("%d/%m/%Y"),"guestVisits")
+        audit(account,"ALUMNI_GUEST_REQUESTED","alumni_guest_visit",x.id);db.session.commit()
+        for member in reviewers:guest_visit_mail(member,"Demande d’invitation d’un ancien",f"L’ancien membre {member_name(account.member_id)} a demandé à venir en tant qu’invité le {day.strftime('%d/%m/%Y')}.\n\nProjet : {x.message or 'Non précisé'}\n\nValide via HUB APP son inscription :\n{HUB_APP_URL}/?guestVisits=1\n")
+        return guest_visit_payload(x),201
+
+    @app.delete("/api/alumni-visits/<int:visit_id>")
+    def withdraw_guest_visit(visit_id):
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        lock_replacement_members(account.member_id)
+        x=AlumniGuestVisit.query.filter_by(id=visit_id,member_id=account.member_id).with_for_update().first()
+        if not x:return {"error":"Demande introuvable."},404
+        if x.status!="PENDING":return {"error":"Seule une demande en attente peut être retirée. Contactez le comité pour une inscription confirmée."},409
+        x.status="WITHDRAWN";audit(account,"ALUMNI_GUEST_WITHDRAWN","alumni_guest_visit",x.id);db.session.commit()
+        return guest_visit_payload(x)
+
+    @app.route("/api/alumni-visits/review",methods=["GET"])
+    def review_guest_visit_list():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        if not can_review_guest(account):return {"error":"Validation réservée à Amélie, Simon et au super admin."},403
+        return jsonify([guest_visit_payload(x) for x in AlumniGuestVisit.query.order_by(AlumniGuestVisit.created_at.desc()).all()])
+
+    @app.patch("/api/alumni-visits/<int:visit_id>/decision")
+    def decide_guest_visit(visit_id):
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        if not can_review_guest(account):return {"error":"Validation non autorisée."},403
+        x=db.session.get(AlumniGuestVisit,visit_id)
+        if not x:return {"error":"Demande introuvable."},404
+        lock_replacement_members(x.member_id)
+        x=AlumniGuestVisit.query.filter_by(id=visit_id).with_for_update().populate_existing().first()
+        if x.status!="PENDING":return {"error":"Cette demande a déjà été traitée."},409
+        data=request.get_json(silent=True) or {};status=data.get("status")
+        if status not in {"APPROVED","DECLINED"}:return {"error":"Décision invalide."},400
+        if status=="APPROVED":
+            if not future_replacement_meeting(x.date):return {"error":"Cette réunion a été annulée ou n’est plus à venir."},409
+            if replacement_conflict(x.date,-1,x.member_id):return {"error":"Cet ancien assure déjà une suppléance ou a une invitation confirmée à cette date."},409
+            member=db.session.get(Member,x.member_id)
+            db.session.add(NetworkVisitor(invited_by_member_id=member.id,name=member_name(member.id),company=member.company,visit_date=x.date,status="INVITED",notes="Ancien invité · demande #"+str(x.id)))
+            for offer in AlumniAvailability.query.filter_by(member_id=x.member_id,date=x.date).all():offer.active=False
+        x.status=status;x.decision_reason=str(data.get("reason") or "")[:500];x.decided_by=account.id
+        word="acceptée" if status=="APPROVED" else "refusée"
+        notify(x.member_id,"ALUMNI_GUEST_DECISION","Demande d’invitation "+word,"Ta demande d’invitation du "+x.date.strftime("%d/%m/%Y")+" a été "+word+".","guestVisits")
+        audit(account,"ALUMNI_GUEST_DECIDED","alumni_guest_visit",x.id,status);db.session.commit()
+        guest_visit_mail(db.session.get(Member,x.member_id),"Ta demande d’invitation a été "+word,"Ta demande d’invitation pour le "+x.date.strftime("%d/%m/%Y")+" a été "+word+".\n"+(x.decision_reason or "")+"\n\nConsulter le HUB :\n"+HUB_APP_URL+"/?guestVisits=1\n")
+        return guest_visit_payload(x)
 
     def lock_replacement_members(*ids):
         # Shared locks across open calls and targeted requests; stable order avoids deadlocks.
@@ -601,6 +712,7 @@ def create_app():
         return next((m for m in rows if day>now.date() or not m.start_time or m.start_time>now.time().replace(tzinfo=None)),None)
 
     def replacement_conflict(day,official_id,alumni_id=None,exclude_target=None,exclude_need=None):
+        if alumni_id and AlumniGuestVisit.query.filter_by(member_id=alumni_id,date=day,status="APPROVED").first():return True
         targeted=AlumniSubstitution.query.filter_by(date=day,status="ACCEPTED")
         needs=AlumniReplacementNeed.query.filter_by(date=day,status="ACCEPTED")
         if exclude_target:targeted=targeted.filter(AlumniSubstitution.id!=exclude_target)
@@ -3323,6 +3435,12 @@ Cette demande est également disponible dans HUB Soignies.""")
         if db.engine.dialect.name=="postgresql":db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS attachment_data BYTEA"))
         if db.engine.dialect.name=="postgresql":db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS event_time VARCHAR(5)"))
         if db.engine.dialect.name=="postgresql":db.session.execute(text("ALTER TABLE member_requests ADD COLUMN IF NOT EXISTS event_location VARCHAR(255)"))
+        db.session.commit()
+        for key,last in [("amelie","loedt"),("simon","vanwymeersch"),("xavier","renaud")]:
+            if not db.session.get(GuestVisitReviewer,key):
+                def normalized_name(value):return unicodedata.normalize("NFKD",value or "").encode("ascii","ignore").decode().casefold().strip()
+                matches=[m for m in Member.query.all() if official_member(m) and normalized_name(m.first_name)==key and normalized_name(m.last_name)==last]
+                if len(matches)==1:db.session.add(GuestVisitReviewer(key=key,member_id=matches[0].id))
         db.session.commit()
         # Existing admitted OFF members move into the isolated alumni space too.
         # Release only future duties; historical attendance and activity stay intact.

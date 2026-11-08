@@ -202,3 +202,29 @@ ni aucun e-mail business n'est renvoyé lors d'une correction. Les statistiques
 relisent les enregistrements corrigés. L'assistance reste en lecture seule.
 Une recommandation ayant des MPB ne peut pas être supprimée directement. Supprimer
 son dernier MPB la remet à PENDING si elle était WON, avec entrée d'historique.
+
+## Anciens venant comme invités
+
+`/api/alumni-visits` permet à un ancien actif de demander une venue personnelle,
+avec date et projet. Deux demandes maximum sont admises par mandature de la réunion,
+y compris celles refusées ou retirées ; les répétitions d'une même requête en attente
+ne consomment pas de demande supplémentaire. Un verrou membre protège ce quota.
+L'historique est conservé dans alumni_guest_visits et ne peut pas être effacé par
+l'ancien pour récupérer une demande.
+
+Les demandes sont notifiées et envoyées aux identités exactes Amélie Loedt, Simon
+Vanwymeersch et Xavier Renaud, via les adresses de leurs fiches. Le lien canonique
+`/?guestVisits=1` ouvre le formulaire de décision après connexion. Seuls les deux
+responsables identifiés ou le super admin peuvent valider/refuser. Une validation
+atomique crée un NetworkVisitor INVITED ; un refus ne crée aucun invité. L'ancien
+reçoit un e-mail de décision et une notification. Le compteur des demandes ne change
+pas lors d'une décision ou d'un retrait.
+
+Depuis ses disponibilités, l'ancien peut choisir « Venir comme invité ». La conversion
+retire cette disponibilité et annule ses sollicitations ciblées en attente pour le
+même jour. Une suppléance déjà confirmée ne peut pas être convertie silencieusement :
+il faut contacter le comité. Une visite approuvée empêche une réservation concurrente
+comme suppléant. Une demande d'invitation en attente peut être retirée par son auteur ;
+une inscription déjà acceptée doit être modifiée avec le comité.
+
+Les identités des validateurs sont figées par identifiant membre lors de la mise en service (guest_visit_reviewers). Modifier un prénom ou un nom dans son profil ne donne aucun droit de validation et ne détourne pas les e-mails.

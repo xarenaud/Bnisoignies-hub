@@ -208,3 +208,20 @@ test('selecting a meeting suggests available alumni and refusal keeps the open-c
   assert.deepEqual(f.errors,[]);
  }finally{f.close();}
 });
+
+test('alumnus can convert availability to a guest request and reviewer link opens decision screen',async()=>{
+ const f=await mount('ALUMNI');try{
+  const normal=f.w.fetch;let submitted=null;
+  f.w.fetch=async(url,options={})=>{
+   if(url.endsWith('/alumni-visits')){if(options.method==='POST')submitted=JSON.parse(options.body);return {ok:true,json:async()=>options.method==='POST'?{status:'PENDING'}:{items:[],meetings:[{date:'2099-02-05',startTime:'07:00'}],limit:2}};}
+   if(url.endsWith('/alumni-space/availability'))return {ok:true,json:async()=>[{id:81,date:'2099-02-05',member:'Test Membre'}]};
+   return normal(url,options);
+  };
+  await f.click('Suppléances');await f.click('Venir comme invité');
+  const section=[...f.w.document.querySelectorAll('section')].find(x=>x.querySelector('h2')?.textContent==='Venir comme invité');assert.ok(section);
+  assert.equal(section.querySelector('select').value,'2099-02-05');section.querySelector('textarea').value='Présenter mon projet';
+  section.querySelector('form').dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));await wait();await wait();
+  assert.equal(submitted.availabilityId,81);assert.equal(submitted.message,'Présenter mon projet');assert.ok(section.textContent.includes('Deux demandes maximum'));assert.deepEqual(f.errors,[]);
+ }finally{f.close();}
+ const review=await mount('MEMBERS',true,'https://hub.test/?guestVisits=1');try{assert.ok(review.text().includes('Valider les invitations des anciens'));assert.deepEqual(review.errors,[]);}finally{review.close();}
+});
