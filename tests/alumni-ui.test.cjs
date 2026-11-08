@@ -164,18 +164,28 @@ test('admin can review and correct then remove a duplicate through the real corr
 });
 
 
-test('home announces available alumni and opens the replacement page with refreshed availability',async()=>{
+test('home keeps one compact link and replacement availability is grouped by ascending meeting date',async()=>{
  const f=await mount();try{
-  assert.ok(!f.text().includes('Jean François CROHIN est disponible'));
+  const offers=Array.from({length:8},(_,i)=>({id:i+1,member:'Suppléant '+(i+1),date:['2099-02-19','2099-02-05','2099-02-12'][i%3],company:'Entreprise',note:'Disponible'}));
+  const normal=f.w.fetch;let selected=null;
+  f.w.fetch=async(url,options={})=>{
+   if(url.endsWith('/alumni-space/availability'))return {ok:true,json:async()=>offers};
+   if(url.endsWith('/alumni-space/substitutions')&&options.method==='POST')selected=JSON.parse(options.body).availabilityId;
+   const r=await normal(url,options);
+   if(url.endsWith('/me/home'))return {ok:true,json:async()=>({...await r.json(),availableSubstitutes:offers})};
+   return r;
+  };
   await f.click('Profil');await f.click('J’active personnellement ma liaison');await f.click('Accueil');
-  const section=f.w.document.querySelector('section[aria-label="Suppléants disponibles"]');assert.ok(section);
-  assert.ok(section.textContent.includes('Jean François CROHIN est disponible pour une suppléance le'));
-  assert.equal(section.querySelector('time').dateTime,'2099-02-05');assert.ok(section.textContent.includes('Disponible ce jeudi'));
-  section.querySelector('button').click();await wait();await wait();assert.ok(f.text().includes('Signaler un besoin de suppléance'));
-  await f.click('Accueil');const normal=f.w.fetch;
-  f.w.fetch=async(url,options)=>{const r=await normal(url,options);if(url.endsWith('/me/home'))return {ok:true,json:async()=>({...await r.json(),availableSubstitutes:[]})};return r;};
-  f.w.dispatchEvent(new f.w.Event('focus'));await wait();await wait();
+  assert.equal(f.w.document.querySelectorAll('.availabilityLink').length,1);
+  assert.ok(!f.text().includes('Suppléant 1'));assert.ok(f.text().includes('Qui est invité ?'));
   assert.ok(!f.w.document.querySelector('section[aria-label="Suppléants disponibles"]'));
+  await f.click('Consultez les disponibilités des suppléants');
+  const section=f.w.document.querySelector('section[aria-label="Disponibilités par date de réunion"]');assert.ok(section);
+  const groups=[...section.querySelectorAll('.availabilityDateGroup')];assert.equal(groups.length,3);
+  assert.deepEqual(groups.map(x=>x.querySelector('time').dateTime),['2099-02-05','2099-02-12','2099-02-19']);
+  assert.equal(groups[0].querySelectorAll('article').length,3);
+  assert.ok(f.text().indexOf('Disponibilités des suppléants')<f.text().indexOf('Signaler un besoin de suppléance'));
+  groups[0].querySelector('button').click();await wait();await wait();assert.equal(selected,2);
   assert.deepEqual(f.errors,[]);
  }finally{f.close();}
 });
