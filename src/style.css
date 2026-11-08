@@ -30,3 +30,5 @@ header{flex-wrap:wrap;gap:8px}
  .app{min-height:100svh;padding-bottom:calc(90px + env(safe-area-inset-bottom,0px))}
  nav.hubNav{position:fixed;top:auto;bottom:0;left:0;right:0;margin-inline:auto;transform:none;width:100%;max-width:760px;height:calc(72px + env(safe-area-inset-bottom,0px));padding-bottom:env(safe-area-inset-bottom,0px);background:#fff;z-index:100}
 }
+
+.breakingNewsPage .announcementText a,.breakingNewsPage .memberList b a{color:#b7192f;text-decoration:underline;overflow-wrap:anywhere}

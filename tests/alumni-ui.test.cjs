@@ -251,3 +251,13 @@ test('breaking news uses a full page and can sort publication dates in both dire
  select.value='latest';select.dispatchEvent(new f.w.Event('change',{bubbles:true}));await wait();assert.deepEqual(titles(),['Récente','Ancienne']);assert.deepEqual(f.errors,[]);
  }finally{f.close();}
 });
+
+
+test('announcement web links are clickable without embedding the sale website or interpreting HTML',async()=>{
+ const f=await mount();try{const normal=f.w.fetch;f.w.fetch=async(url,options)=>url.endsWith('/announcements')?{ok:true,json:async()=>[{id:8,subject:'Ma voiture',member:'Un membre',description:'Voir https://vente.example/auto?id=12&src=hub. Aussi www.garage.example/offre(test). <img src=x onerror=alert(1)> javascript:alert(1)',startDate:'2026-11-08',endDate:'2026-12-09'}]}:normal(url,options);
+ await f.click('BREAKING NEWS');const text=f.w.document.querySelector('.announcementText');const links=[...text.querySelectorAll('a')];assert.equal(links.length,2);
+ assert.equal(links[0].href,'https://vente.example/auto?id=12&src=hub');assert.equal(links[1].href,'https://www.garage.example/offre(test)');
+ for(const link of links){assert.equal(link.target,'_blank');assert.ok(link.rel.includes('noopener'));assert.ok(link.rel.includes('noreferrer'));}
+ assert.ok(!text.querySelector('img'));assert.ok(!f.w.document.querySelector('iframe'));assert.ok(text.textContent.includes('javascript:alert(1)'));assert.deepEqual(f.errors,[]);
+ }finally{f.close();}
+});
