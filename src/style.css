@@ -7,7 +7,7 @@
 
 /* Member workspace: five stable sections, readable on desktop and mobile. */
 .period{font-size:12px;color:#737980;margin:0 0 12px}.meetingDetails{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 0 24px}.meetingDetails section,.subscription{padding:18px;border:1px solid #e8eaed;border-radius:14px;background:#fafafa}.meetingDetails h3,.subscription h3{margin-top:0;font-size:16px}.meetingDetails p{font-size:13px;line-height:1.6}.meetingDetails small{display:block;color:#737980}.subscription{margin-bottom:20px}.memberForm select,.memberForm textarea{min-width:0;width:100%;font:inherit;font-size:13px;padding:11px;border:1px solid #dfe2e5;border-radius:9px;background:#fff}.memberForm textarea{grid-column:1/-1;min-height:90px}.adminStats b{overflow-wrap:anywhere}button{cursor:pointer}button:focus-visible,a:focus-visible{outline:3px solid #b31d2d;outline-offset:3px}nav button{min-height:48px}.grow{min-width:0}
-@media(min-width:1000px){.app{max-width:1180px;padding-left:190px;padding-bottom:28px;position:relative}.app header{padding:0 30px}.app main{padding:30px;max-width:990px;margin:auto}.app nav{position:fixed;left:max(0px,calc((100vw - 1180px)/2));top:0;bottom:0;transform:none;width:190px;height:100vh;padding:100px 16px 24px;display:flex;flex-direction:column;justify-content:flex-start;gap:10px;border-top:0;border-right:1px solid #eceef0;background:#fafafa;z-index:4}.app nav button{flex:0 0 auto;flex-direction:row;justify-content:flex-start;gap:12px;text-align:left;padding:16px;font-size:13px;border-radius:10px}.app nav button.on{background:#f7e8ea}.app .actions{display:grid;grid-template-columns:1fr 1fr}.app .adminStats{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(min-width:1000px){.app{max-width:1180px;padding-left:190px;padding-bottom:28px;position:relative}.app header{padding:0 30px}.app main{padding:30px;max-width:990px;margin:auto}nav.hubNav{position:fixed;left:max(0px,calc((100vw - 1180px)/2));top:0;bottom:0;transform:none;width:190px;height:100vh;padding:100px 16px 24px;display:flex;flex-direction:column;justify-content:flex-start;gap:10px;border-top:0;border-right:1px solid #eceef0;background:#fafafa;z-index:4}nav.hubNav button{flex:0 0 auto;flex-direction:row;justify-content:flex-start;gap:12px;text-align:left;padding:16px;font-size:13px;border-radius:10px}nav.hubNav button.on{background:#f7e8ea}.app .actions{display:grid;grid-template-columns:1fr 1fr}.app .adminStats{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:600px){.meetingDetails{grid-template-columns:1fr}.adminStats{grid-template-columns:repeat(2,minmax(0,1fr))}.hero p{flex-wrap:wrap}header{padding:0 12px;gap:8px}.brand b{font-size:14px}.brand small{font-size:9px}.toolbar{flex-wrap:wrap}.memberList article{flex-wrap:wrap}}
 
 header{flex-wrap:wrap;gap:8px}
@@ -25,3 +25,8 @@ header{flex-wrap:wrap;gap:8px}
 .breakingNewsPage input[name="durationDays"]::placeholder{color:#92979e;font-style:italic;opacity:1}
 
 .newsSort{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:20px 0 10px}.newsSort select{padding:9px 12px;border:1px solid #ddd;border-radius:8px;background:white;color:#252a2e}
+
+@media(max-width:999px){
+ .app{min-height:100svh;padding-bottom:calc(90px + env(safe-area-inset-bottom,0px))}
+ nav.hubNav{position:fixed;top:auto;bottom:0;left:0;right:0;margin-inline:auto;transform:none;width:100%;max-width:760px;height:calc(72px + env(safe-area-inset-bottom,0px));padding-bottom:env(safe-area-inset-bottom,0px);background:#fff;z-index:100}
+}
