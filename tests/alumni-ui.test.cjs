@@ -1,9 +1,10 @@
 const test=require('node:test');const assert=require('node:assert/strict');const {JSDOM}=require('jsdom');const esbuild=require('esbuild');const path=require('node:path');
 let bundle;
 const wait=()=>new Promise(r=>setTimeout(r,60));
-async function mount(environment='MEMBERS',admin=false,url='https://hub.test/',initialAuthOffline=false){
+async function mount(environment='MEMBERS',admin=false,url='https://hub.test/',initialAuthOffline=false,savedNav=null){
  if(!bundle){const r=await esbuild.build({entryPoints:[path.join(__dirname,'../src/main.jsx')],bundle:true,write:false,format:'iife',loader:{'.css':'empty'},define:{'import.meta.env.VITE_API_URL':'"https://hub.test/api"','import.meta.env.PROD':'false'}});bundle=r.outputFiles[0].text;}
  const dom=new JSDOM('<div id="root"></div>',{url,runScripts:'dangerously'}),w=dom.window;const errors=[];w.addEventListener('error',e=>errors.push(e.message));w.localStorage.setItem('bni_token','fixture');w.confirm=()=>true;
+ if(savedNav)w.sessionStorage.setItem('bni_nav',JSON.stringify(savedNav));
  const calls=[];let opted=false;let needs=environment==='ALUMNI'?[{id:9,date:'2099-02-05',official:'Membre actif',officialId:2,status:'OPEN',note:'Remplacement demandé'}]:[];const user=()=>({id:1,firstName:'Test',lastName:'Membre',email:'fixture@example.test',environment,alumniBridgeEnabled:opted,networkModuleEnabled:environment==='ALUMNI'||opted,networkAccessEnabled:environment==='ALUMNI'||opted,roles:[],isAdmin:admin,isSystemAdmin:admin});
  w.fetch=async(url,options={})=>{calls.push({url,method:options.method||'GET'});const p=new URL(url).pathname.replace('/api','');let data=[];
   if(p==='/agenda'){const month=new URL(url).searchParams.get('month');data={month,items:[{id:'meeting-4',kind:'MEETING',date:month+'-05',startTime:'07:00',type:'REGULAR',location:'Salle du groupe'},{id:'event-1',kind:'EVENT',date:month+'-12',title:'Portes ouvertes du membre',member:'Membre actif',origin:'MEMBERS'},{id:'event-2',kind:'EVENT',date:month+'-19',title:'Conférence des anciens',member:'Ancien Test',origin:'ALUMNI'}],nextRole:environment==='ALUMNI'?null:{date:'2099-02-05',startTime:'07:00',duties:[{id:1,duty:'Préparation de salle',status:'PUBLISHED'}],team:[{id:2,member:'Collègue Accueil',duty:'Accueil des invités'}]}};}
@@ -223,7 +224,7 @@ test('alumnus can convert availability to a guest request and reviewer link open
   section.querySelector('form').dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));await wait();await wait();
   assert.equal(submitted.availabilityId,81);assert.equal(submitted.message,'Présenter mon projet');assert.ok(section.textContent.includes('Deux demandes maximum'));assert.deepEqual(f.errors,[]);
  }finally{f.close();}
- const review=await mount('MEMBERS',true,'https://hub.test/?guestVisits=1');try{assert.ok(review.text().includes('Valider les invitations des anciens'));assert.deepEqual(review.errors,[]);}finally{review.close();}
+ const review=await mount('MEMBERS',true,'https://hub.test/?guestVisits=1',false,{admin:true});try{assert.equal(review.w.document.querySelector('.pagehead h1')?.textContent,'Valider les invitations des anciens');assert.ok(review.text().includes('Aucune demande d’invitation à afficher'));assert.equal(review.w.document.querySelectorAll('nav button svg').length,5);assert.equal(review.w.document.querySelector('nav').parentElement,review.w.document.body);assert.ok(!review.w.document.querySelector('.importCard'));await review.click('Planning');assert.ok(review.text().includes('Planning du HUB'));assert.equal(review.w.location.search,'');assert.deepEqual(review.errors,[]);}finally{review.close();}
 });
 
 test('breaking news is shared by both environments, opens from Participate and toggles interest',async()=>{

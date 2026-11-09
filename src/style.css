@@ -32,3 +32,6 @@ header{flex-wrap:wrap;gap:8px}
 }
 
 .breakingNewsPage .announcementText a,.breakingNewsPage .memberList b a{color:#b7192f;text-decoration:underline;overflow-wrap:anywhere}
+
+.guestReview .pagehead p{color:#70757b;line-height:1.5;margin-bottom:24px}.guestVisitList{display:grid;gap:14px}.guestVisitList>article{display:flex;align-items:flex-start;gap:18px;padding:20px;border:1px solid #e1e4e8;border-radius:14px;background:#fff}.guestVisitList .grow{min-width:0;flex:1}.guestVisitList b{display:block;margin-bottom:10px}.guestVisitList p{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.5}.guestVisitActions{display:flex;flex-wrap:wrap;gap:8px;max-width:260px}.guestVisitActions button{width:100%}.guestVisitList .empty{padding:30px 20px;border:1px solid #e1e4e8;border-radius:14px;background:#f8f9fa;text-align:center}.guestVisitList .empty svg{color:#cf2030;width:32px;height:32px}
+@media(max-width:600px){.guestVisitList>article{flex-direction:column;padding:16px}.guestVisitActions{max-width:none;width:100%}.guestVisitActions button{flex:1 1 150px}.guestReview .pagehead h1{font-size:25px}}
