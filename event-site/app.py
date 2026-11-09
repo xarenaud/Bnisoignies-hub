@@ -638,6 +638,40 @@ def invitation_campaign(campaign_id):
     return jsonify(campaign_summary(campaign_id))
 
 
+
+@app.post('/api/admin/invitation-reminder-20261112')
+@admin_required
+def schedule_invitation_reminder():
+    if not same_origin():
+        return jsonify(error='Origine non autorisée.'), 403
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify(error='Données invalides.'), 422
+    campaign_id = 'inter-bni-20261112-0815'
+    source_id = 'inter-bni-20261109-0750'
+    due = datetime(2026, 11, 12, 8, 15, tzinfo=ZoneInfo('Europe/Brussels')).timestamp()
+    html = (Path(app.static_folder) / 'mailing-inter-bni-rappel-20261112.html').read_text()
+    html_hash = hashlib.sha256(html.encode()).hexdigest()
+    if data.get('approvedHtmlSha256') != html_hash:
+        return jsonify(error='Le contenu ne correspond pas au mailing validé.'), 409
+    with database() as db:
+        db.execute('BEGIN IMMEDIATE')
+        if not db.execute('SELECT 1 FROM invitation_campaigns WHERE id=?', (campaign_id,)).fetchone():
+            if due <= time.time():
+                return jsonify(error='La date programmée est passée.'), 422
+            source_count = db.execute('SELECT COUNT(*) FROM invitation_campaign_recipients WHERE campaign_id=?', (source_id,)).fetchone()[0]
+            if source_count != 315:
+                return jsonify(error='La liste source ne comporte pas les 315 adresses attendues.'), 409
+            db.execute('INSERT INTO invitation_campaigns VALUES(?,?,?,?,?)', (
+                campaign_id, due, 'RAPPEL : INTER BNI 26/11/2026 - Ford Steveny Soignies',
+                html, datetime.now(ZoneInfo('Europe/Brussels')).isoformat()))
+            db.execute("INSERT INTO invitation_campaign_recipients(campaign_id,email) SELECT ?,email FROM invitation_campaign_recipients WHERE campaign_id=?", (campaign_id,source_id))
+            exclude_registered_campaign_recipients(db,campaign_id,due_only=False)
+    result = campaign_summary(campaign_id)
+    result.update(sourceCampaign=source_id, sender='hub@bim-soignies.be', htmlSha256=html_hash)
+    return jsonify(result)
+
+
 def deliver_campaign():
     now = time.time()
     with database() as db:
@@ -658,6 +692,8 @@ def deliver_campaign():
     message['Date'] = formatdate(localtime=False)
     message['Message-ID'] = '<' + row['id'] + '.' + hashlib.sha256(row['email'].encode()).hexdigest()[:20] + '@event.bim-soignies.be>'
     message.set_content('Inter BNI — jeudi 26 novembre 2026, de 7 h à 10 h 30. Garage Ford Steveny Soignies, chaussée de Mons 71, 7060 Soignies. Participation : 10 EUR par personne. Inscription avec obligation de paiement, y compris en cas d’absence. Informations et inscription : https://event.bim-soignies.be/#inscription\nContact et retrait des invitations : event@bim-soignies.be')
+    if row['id'] == 'inter-bni-20261112-0815':
+        message.set_content((Path(app.static_folder) / 'mailing-inter-bni-rappel-20261112.txt').read_text())
     message.add_alternative(row['html'], subtype='html')
     try:
         send_notification(message)
@@ -678,4 +714,5 @@ def expense_payment_label(ref):
 
 from expense_notes import install as install_expense_notes
 expense_service = install_expense_notes(app, database, admin_required, same_origin, send_notification, ADMIN_PASSWORD, NOTIFICATIONS_ENABLED)
+
 
