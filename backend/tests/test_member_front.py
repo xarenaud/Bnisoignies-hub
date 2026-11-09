@@ -74,8 +74,10 @@ class MemberFrontTests(unittest.TestCase):
         self.assertEqual(stats['businessReceived'],75)
         self.assertEqual(stats['oneToOnes'],1)
         self.assertEqual(stats['referralsGiven'],1)
-        # Turning off future interactions must not erase one's recorded activity.
+        # Hide current OFF figures when opted out, but retain recorded activity.
         hub.db.session.get(hub.Member,self.ids['active']).alumni_bridge_enabled=False;hub.db.session.commit()
+        self.assertIsNone(self.client.get('/api/me/home',headers=self.headers['active']).get_json()['offActivity'])
+        hub.db.session.get(hub.Member,self.ids['active']).alumni_bridge_enabled=True;hub.db.session.commit()
         self.assertEqual(self.client.get('/api/me/home',headers=self.headers['active']).get_json()['offActivity']['businessGenerated'],125)
 
     def test_home_published_duties_guests_and_private_resources(self):

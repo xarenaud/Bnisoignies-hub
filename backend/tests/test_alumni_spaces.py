@@ -118,14 +118,14 @@ class AlumniSpacesTests(unittest.TestCase):
         memberships=hub.Membership.query.filter_by(member_id=self.ids['active']).order_by(hub.Membership.id).all()
         self.assertEqual([m.status for m in memberships],['FORMER','OFF'])
         self.assertEqual(self.get('/api/me/past-stats').status_code,200)
-    def test_only_alumni_can_offer_and_only_opted_official_can_request(self):
+    def test_only_alumni_can_offer_and_all_official_members_can_request(self):
         day=(date.today()+timedelta(days=7)).isoformat()
         self.assertEqual(self.post('/api/alumni-space/availability',{'date':day}).status_code,403)
         offer=self.post('/api/alumni-space/availability',{'date':day,'note':'Disponible'},'off');self.assertEqual(offer.status_code,201)
         aid=offer.get_json()['id']
-        self.assertEqual(self.get('/api/alumni-space/availability').status_code,403)
-        self.assertEqual(self.post('/api/alumni-space/substitutions',{'availabilityId':aid}).status_code,403)
-        self.bridge();self.bridge('active2')
+        self.assertEqual(self.get('/api/alumni-space/availability').status_code,200)
+        self.assertEqual(self.get('/api/alumni-space/availability','former').status_code,403)
+        self.assertEqual(self.post('/api/alumni-space/substitutions',{'availabilityId':aid},'former').status_code,403)
         self.assertEqual(len(self.get('/api/alumni-space/availability').get_json()),1)
         self.assertEqual(self.post('/api/alumni-space/substitutions',{'availabilityId':aid}).status_code,400)
         hub.db.session.add(hub.Meeting(date=date.fromisoformat(day),start_time=time(7),type='REGULAR',status='PLANNED',location='Lieu privé'));hub.db.session.commit()
@@ -137,14 +137,13 @@ class AlumniSpacesTests(unittest.TestCase):
         self.assertEqual(self.client.patch(f'/api/alumni-space/substitutions/{rid}',headers=self.headers['off2'],json={'status':'ACCEPTED'}).status_code,404)
         self.assertEqual(self.client.patch(f'/api/alumni-space/substitutions/{rid}',headers=self.headers['off'],json={'status':'ACCEPTED'}).status_code,200)
         self.assertEqual(self.post('/api/alumni-space/substitutions',{'availabilityId':aid},'active2').status_code,409)
-    def test_home_availability_respects_consent_accounts_and_both_claim_paths(self):
+    def test_home_availability_without_bridge_respects_accounts_and_both_claim_paths(self):
         day=date.today()+timedelta(days=7)
         hub.db.session.add(hub.Meeting(date=day,start_time=time(7),type='REGULAR',status='PLANNED'))
         offer=hub.AlumniAvailability(member_id=self.ids['off'],date=day,active=True,note='Disponible pour remplacer')
         past=hub.AlumniAvailability(member_id=self.ids['off2'],date=date.today()-timedelta(days=1),active=True)
         hub.db.session.add_all([offer,past]);hub.db.session.commit()
-        self.assertEqual(self.get('/api/me/home').get_json()['availableSubstitutes'],[])
-        self.bridge()
+        self.assertIsNone(self.get('/api/me/home').get_json()['offActivity'])
         rows=self.get('/api/me/home').get_json()['availableSubstitutes']
         self.assertEqual([r['memberId'] for r in rows],[self.ids['off']])
         self.assertEqual(rows[0]['date'],day.isoformat())
@@ -184,13 +183,16 @@ class AlumniSpacesTests(unittest.TestCase):
         self.assertEqual(self.post(f'/api/swaps/{swap["id"]}/volunteer',{},'active2').status_code,200)
         self.assertEqual(hub.db.session.get(hub.DutyAssignment,assignment.id).member_id,self.ids['active2'])
 
-    def test_revoked_bridge_blocks_pending_acceptance(self):
+    def test_revoked_business_bridge_does_not_block_pending_replacement_acceptance(self):
         day=date.today()+timedelta(days=7);self.bridge()
         hub.db.session.add(hub.Meeting(date=day,start_time=time(7),type='REGULAR',status='PLANNED'));hub.db.session.commit()
         aid=self.post('/api/alumni-space/availability',{'date':day.isoformat()},'off').get_json()['id']
         rid=self.post('/api/alumni-space/substitutions',{'availabilityId':aid}).get_json()['id']
         self.bridge(enabled=False)
-        self.assertEqual(self.client.patch(f'/api/alumni-space/substitutions/{rid}',headers=self.headers['off'],json={'status':'ACCEPTED'}).status_code,403)
+        self.assertEqual(self.client.patch(f'/api/alumni-space/substitutions/{rid}',headers=self.headers['off'],json={'status':'ACCEPTED'}).status_code,200)
+        self.assertFalse(self.get('/api/auth/me').get_json()['member']['alumniBridgeEnabled'])
+        self.encode_all('active','off',403)
+        self.encode_all('off','active',403)
 
     def test_bridge_visibility_and_admin_diagnostics_for_every_membership_type(self):
         # Same personal choice for ordinary active, onboarding and system administrator.

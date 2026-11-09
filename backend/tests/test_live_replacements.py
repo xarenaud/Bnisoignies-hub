@@ -20,7 +20,6 @@ class LiveReplacementTests(unittest.TestCase):
         hub.db.session.add(self.meeting);hub.db.session.commit()
     def tearDown(self):fixture.AlumniSpacesTests.tearDown(self)
     def publish(self,who='active'):
-        self.bridge(who)
         r=self.post('/api/alumni-space/replacement-needs',{'date':self.day.isoformat(),'note':'Besoin de remplacement'},who)
         self.assertEqual(r.status_code,201,r.get_json());return r.get_json()
     def accept(self,mid,who='off'):
@@ -29,9 +28,9 @@ class LiveReplacementTests(unittest.TestCase):
         path='/api/alumni-space/replacement-needs'
         self.assertEqual(self.client.get(path).status_code,401)
         self.assertEqual(self.client.post(path,json={}).status_code,401)
-        self.assertEqual(self.get(path).status_code,403)
+        self.assertEqual(self.get(path).status_code,200)
+        self.assertEqual(self.get(path,'former').status_code,403)
         self.assertEqual(self.post(path,{'date':self.day.isoformat()},'off').status_code,403)
-        self.bridge()
         for day in ['bad',(date.today()-timedelta(days=1)).isoformat(),(self.day+timedelta(days=1)).isoformat()]:
             self.assertEqual(self.post(path,{'date':day}).status_code,400)
         with patch.dict(os.environ,{'SMTP_HOST':'smtp.example.test','SMTP_FROM':'hub@example.test','SMTP_USER':'','SMTP_SSL':'false','APP_URL':'https://hub.test'}),patch.object(hub.smtplib,'SMTP') as smtp:
@@ -41,8 +40,8 @@ class LiveReplacementTests(unittest.TestCase):
             for m in mails:
                 self.assertIsNone(m['Cc']);self.assertIsNone(m['Bcc']);self.assertIn('Suppléance recherchée',m['Subject']);self.assertIn('?substitutions=1',m.get_content())
         self.assertEqual(self.post(path,{'date':self.day.isoformat()}).status_code,409)
-        self.assertEqual(self.get(path,'active2').status_code,403)
-        self.bridge('active2');self.assertEqual(self.get(path,'active2').get_json(),[])
+        self.assertEqual(self.get(path,'active2').get_json(),[])
+        self.assertFalse(self.get('/api/auth/me').get_json()['member']['alumniBridgeEnabled'])
     def test_first_acceptance_names_and_private_meeting_details(self):
         need=self.publish();nid=need['id']
         self.assertIsNone(self.get('/api/alumni-space/replacement-needs','off').get_json()[0]['location'])
@@ -55,16 +54,18 @@ class LiveReplacementTests(unittest.TestCase):
         self.assertIsNone(self.get('/api/alumni-space/replacement-needs','off2').get_json()[0]['location'])
         notices=self.get('/api/me/notifications').get_json()['items'];notice=next(n for n in notices if n['title']=='Suppléance confirmée')
         self.assertIn('off Test a accepté de remplacer active Test',notice['message']);self.assertEqual(notice['link'],'substitutions')
-    def test_revoked_consent_cancelled_meeting_and_owner_cancellation(self):
+    def test_business_opt_out_keeps_replacements_but_cancelled_meetings_are_blocked(self):
         nid=self.publish()['id'];self.bridge(enabled=False)
-        self.assertEqual(self.accept(nid).status_code,403);self.assertEqual(self.get('/api/alumni-space/replacement-needs','off').get_json(),[])
-        self.bridge();self.meeting.status='CANCELLED';hub.db.session.commit();self.assertEqual(self.accept(nid).status_code,400)
+        self.assertEqual(self.get('/api/alumni-space/replacement-needs','off').get_json()[0]['id'],nid)
+        self.meeting.status='CANCELLED';hub.db.session.commit();self.assertEqual(self.accept(nid).status_code,400)
         self.assertEqual(self.get('/api/alumni-space/replacement-needs','off').get_json(),[])
         self.meeting.status='PLANNED';hub.db.session.commit()
         self.assertEqual(self.client.delete(f'/api/alumni-space/replacement-needs/{nid}',headers=self.headers['off']).status_code,403)
         self.assertEqual(self.client.delete(f'/api/alumni-space/replacement-needs/{nid}',headers=self.headers['active']).status_code,200)
         self.assertEqual(self.accept(nid).status_code,409)
         self.assertEqual(self.publish()['id'],nid)
+        self.assertEqual(self.accept(nid).status_code,200)
+        self.assertFalse(self.get('/api/auth/me').get_json()['member']['alumniBridgeEnabled'])
     def test_open_and_targeted_requests_cannot_double_book(self):
         nid=self.publish()['id'];self.assertEqual(self.accept(nid).status_code,200)
         second=self.publish('active2')['id']

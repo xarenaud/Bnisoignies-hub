@@ -612,6 +612,14 @@ def create_app():
         member=db.session.get(Member,x.member_id)
         return {"id":x.id,"memberId":x.member_id,"member":member_name(x.member_id),"company":member.company,"date":x.date.isoformat(),"note":x.note,"active":x.active}
 
+    def replacement_account():
+        # Replacement access is independent of the optional business bridge.
+        account,_=bearer_account()
+        if not account:return None,({"error":"Authentification requise."},401)
+        if not (official_member(account.member) or alumni_member(account.member)):
+            return None,({"error":"Réservé aux membres et anciens actifs."},403)
+        return account,None
+
     def visible_alumni_availability():
         today=datetime.now(ZoneInfo("Europe/Brussels")).date()
         rows=AlumniAvailability.query.filter(AlumniAvailability.date>=today,AlumniAvailability.active==True).order_by(AlumniAvailability.date,AlumniAvailability.id).all()
@@ -849,11 +857,11 @@ def create_app():
         account,_=bearer_account()
         if not account:return {"error":"Authentification requise."},401
         is_alumni=alumni_member(account.member)
-        if not is_alumni and not network_bridge_enabled(account):return {"error":"Activez personnellement la liaison avec les anciens."},403
+        if not is_alumni and not official_member(account.member):return {"error":"Réservé aux membres et anciens actifs."},403
         if request.method=="GET":
             rows=AlumniReplacementNeed.query.order_by(AlumniReplacementNeed.date.desc(),AlumniReplacementNeed.id.desc()).all()
             if is_alumni:
-                rows=[x for x in rows if x.alumni_id==account.member_id or (x.date>=datetime.now(ZoneInfo("Europe/Brussels")).date() and official_member(db.session.get(Member,x.official_id)) and db.session.get(Member,x.official_id).alumni_bridge_enabled and (x.status!="OPEN" or future_replacement_meeting(x.date)))]
+                rows=[x for x in rows if x.alumni_id==account.member_id or (x.date>=datetime.now(ZoneInfo("Europe/Brussels")).date() and official_member(db.session.get(Member,x.official_id)) and (x.status!="OPEN" or future_replacement_meeting(x.date)))]
             else:rows=[x for x in rows if x.official_id==account.member_id]
             return jsonify([replacement_need_payload(x,account.member_id) for x in rows])
         if is_alumni:return {"error":"Seul un membre actif peut publier un besoin."},403
@@ -861,7 +869,7 @@ def create_app():
         try:day=date.fromisoformat(data.get("date",""))
         except (ValueError,TypeError):return {"error":"Date invalide."},400
         lock_replacement_members(account.member_id)
-        if not network_bridge_enabled(account):return {"error":"La liaison personnelle est désactivée."},403
+        if not official_member(account.member):return {"error":"Réservé aux membres actifs."},403
         if not future_replacement_meeting(day):return {"error":"Choisissez une réunion à venir programmée dans le planning."},400
         if replacement_conflict(day,account.member_id):return {"error":"Votre remplacement est déjà assuré à cette date."},409
         x=AlumniReplacementNeed.query.filter_by(official_id=account.member_id,date=day).with_for_update().first()
@@ -897,7 +905,7 @@ def create_app():
         lock_replacement_members(x.official_id,account.member_id)
         x=AlumniReplacementNeed.query.filter_by(id=item_id).with_for_update().populate_existing().first()
         official=db.session.get(Member,x.official_id)
-        if not official_member(official) or not official.alumni_bridge_enabled:return {"error":"La liaison du membre est désactivée."},403
+        if not official_member(official):return {"error":"Ce membre ne fait plus partie des membres actifs."},403
         if x.status!="OPEN":return {"error":"Cette suppléance n’est plus disponible.","need":replacement_need_payload(x,account.member_id)},409
         if not future_replacement_meeting(x.date):return {"error":"Cette réunion n’est plus à venir ou a été annulée."},400
         if replacement_conflict(x.date,x.official_id,account.member_id,exclude_need=x.id):return {"error":"Un remplacement est déjà accepté pour ce membre ou pour vous à cette date."},409
@@ -915,7 +923,7 @@ def create_app():
 
     @app.route("/api/alumni-space/availability",methods=["GET","POST"])
     def alumni_availability():
-        account,err=require_feature("REFERRALS")
+        account,err=replacement_account()
         if err:return err
         if request.method=="POST":
             if not alumni_member(account.member):return {"error":"Seuls les anciens proposent une suppléance."},403
@@ -946,12 +954,12 @@ def create_app():
 
     @app.route("/api/alumni-space/substitutions",methods=["GET","POST"])
     def alumni_substitutions():
-        account,_=bearer_account()
-        if not account:return {"error":"Authentification requise."},401
+        account,err=replacement_account()
+        if err:return err
         if request.method=="GET":
             rows=AlumniSubstitution.query.filter(db.or_(AlumniSubstitution.official_id==account.member_id,AlumniSubstitution.alumni_id==account.member_id)).order_by(AlumniSubstitution.date.desc()).all()
             return jsonify([substitution_payload(x) for x in rows])
-        if not official_member(account.member) or not account.member.alumni_bridge_enabled:return {"error":"Activez personnellement la liaison avec les anciens."},403
+        if not official_member(account.member):return {"error":"Seul un membre actif peut solliciter une suppléance."},403
         try:item_id=int((request.get_json(silent=True) or {}).get("availabilityId"))
         except (ValueError,TypeError):return {"error":"Disponibilité invalide."},400
         availability=db.session.get(AlumniAvailability,item_id)
@@ -960,7 +968,7 @@ def create_app():
         availability=AlumniAvailability.query.filter_by(id=item_id).with_for_update().populate_existing().first()
         if not availability or not availability.active or availability.date<date.today():return {"error":"Cette disponibilité n'est plus proposée."},400
         target=db.session.get(Member,availability.member_id)
-        if not alumni_member(target):return {"error":"Cet ancien n'est plus disponible."},400
+        if not alumni_member(target) or not target.user_account or target.user_account.status!="ACTIVE":return {"error":"Cet ancien n'est plus disponible."},400
         meeting=future_replacement_meeting(availability.date)
         if not meeting:return {"error":"Aucune réunion n'est programmée à cette date."},400
         existing=AlumniSubstitution.query.filter_by(official_id=account.member_id,alumni_id=target.id,date=availability.date).filter(AlumniSubstitution.status.in_(["REQUESTED","ACCEPTED"])).first()
@@ -975,13 +983,13 @@ def create_app():
     def accept_available_substitute(item_id):
         account,_=bearer_account()
         if not account:return {"error":"Authentification requise."},401
-        if not network_bridge_enabled(account):return {"error":"Activez personnellement la liaison avec les anciens."},403
+        if not official_member(account.member):return {"error":"Seul un membre actif peut solliciter une suppléance."},403
         offer=db.session.get(AlumniAvailability,item_id)
         if not offer:return {"error":"Disponibilité introuvable."},404
         lock_replacement_members(account.member_id,offer.member_id)
         offer=AlumniAvailability.query.filter_by(id=item_id).with_for_update().populate_existing().first()
         member=db.session.get(Member,offer.member_id)
-        if not network_bridge_enabled(account) or not offer.active or not alumni_member(member) or not member.user_account or member.user_account.status!="ACTIVE":return {"error":"Cette disponibilité n'est plus proposée."},409
+        if not official_member(account.member) or not offer.active or not alumni_member(member) or not member.user_account or member.user_account.status!="ACTIVE":return {"error":"Cette disponibilité n'est plus proposée."},409
         if not future_replacement_meeting(offer.date):return {"error":"Cette réunion n'est plus à venir ou a été annulée."},400
         if replacement_conflict(offer.date,account.member_id,member.id):return {"error":"Un remplacement est déjà confirmé pour cette date."},409
         pending=AlumniSubstitution.query.filter_by(official_id=account.member_id,date=offer.date,status="REQUESTED").all()
@@ -1017,7 +1025,7 @@ def create_app():
                 if not future_replacement_meeting(x.date):return {"error":"Cette réunion n’est plus à venir ou a été annulée."},400
                 if replacement_conflict(x.date,x.official_id,x.alumni_id,exclude_target=x.id):return {"error":"Un remplacement est déjà accepté pour cette date."},409
                 official=db.session.get(Member,x.official_id)
-                if not official_member(official) or not official.alumni_bridge_enabled:return {"error":"La liaison de ce membre actif est désactivée."},403
+                if not official_member(official):return {"error":"Ce membre ne fait plus partie des membres actifs."},403
                 AlumniAvailability.query.filter_by(id=x.availability_id).with_for_update().first()
                 if AlumniSubstitution.query.filter(AlumniSubstitution.alumni_id==x.alumni_id,AlumniSubstitution.date==x.date,AlumniSubstitution.status=="ACCEPTED",AlumniSubstitution.id!=x.id).first():return {"error":"Une autre suppléance est déjà acceptée pour cette date."},409
             x.status=status
@@ -1629,7 +1637,7 @@ def create_app():
             next_payload={**meeting_payload(meeting),"assignments":[assignment_payload(a) for a in assignments if official_member(db.session.get(Member,a.member_id))],
                 "guests":[{"id":f"visitor-{g.id}","name":g.name,"company":g.company,"invitedBy":member_name(g.invited_by_member_id)} for g in guests]+
                     [{"id":f"request-{g.id}","name":g.guest_name,"company":None,"invitedBy":member_name(g.member_id)} for g in legacy if g.guest_name and g.guest_name.strip().casefold() not in names]}
-        return {"memberStats":None,"groupStats":None,"offActivity":member_statistics(account.member_id,active_mandate()),"availableSubstitutes":[availability_payload(x) for x in visible_alumni_availability()] if network_bridge_enabled(account) else [],"nextMeeting":next_payload}
+        return {"memberStats":None,"groupStats":None,"offActivity":member_statistics(account.member_id,active_mandate()) if network_bridge_enabled(account) else None,"availableSubstitutes":[availability_payload(x) for x in visible_alumni_availability()],"nextMeeting":next_payload}
 
     @app.get("/api/network/leaderboard")
     def network_leaderboard():

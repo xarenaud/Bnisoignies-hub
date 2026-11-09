@@ -19,7 +19,7 @@ async function mount(environment='MEMBERS',admin=false,url='https://hub.test/',i
   if(p==='/auth/activate')data={status:'ACTIVE'};
   if(p==='/members')data=[{id:2,firstName:'Actif',lastName:'Test',status:'ACTIVE',accountStatus:'ACTIVE',networkType:'OFFICIAL_BNI'},{id:3,firstName:'Ancien',lastName:'Test',status:'OFF',networkType:'OFF'}];
   if(p==='/me/notifications')data={unread:0,items:[]};
-  if(p==='/me/home')data={availableSubstitutes:opted?[{id:40,member:'Jean François CROHIN',date:'2099-02-05',note:'Disponible ce jeudi'}]:[],nextMeeting:{date:'2099-02-05',type:'REGULAR',startTime:'07:00',assignments:[],guests:[{id:'guest-1',name:'Invité du jeudi',invitedBy:'Test Membre'}]},memberStats:null,groupStats:null,offActivity:{mandateId:1,mandate:'Mandature en cours',periodStart:'2026-10-01',periodEnd:'2026-11-08',businessGenerated:1250.5,businessReceived:375,oneToOnes:4,referralsGiven:7}};
+  if(p==='/me/home')data={availableSubstitutes:[{id:40,member:'Jean François CROHIN',date:'2099-02-05',note:'Disponible ce jeudi'}],nextMeeting:{date:'2099-02-05',type:'REGULAR',startTime:'07:00',assignments:[],guests:[{id:'guest-1',name:'Invité du jeudi',invitedBy:'Test Membre'}]},memberStats:null,groupStats:null,offActivity:{mandateId:1,mandate:'Mandature en cours',periodStart:'2026-10-01',periodEnd:'2026-11-08',businessGenerated:1250.5,businessReceived:375,oneToOnes:4,referralsGiven:7}};
   if(p==='/alumni-space/me')data={environment,bridgeEnabled:opted,requestedAt:null,stats:null};
   if(p==='/me/alumni-bridge'){opted=JSON.parse(options.body).enabled;data={member:user(),bridgeEnabled:opted};}
   if(p==='/network/config')data={features:{REFERRALS:true,BUSINESS:true,ONE_TO_ONE:true},fullNetworkEnabled:true};
@@ -44,7 +44,7 @@ test('inviting an alumnus displays the activation link without crashing',async()
 test('invitation URL opens password activation even when another session exists',async()=>{const f=await mount('MEMBERS',true,'https://hub.test/?activate=fixture-invitation');try{assert.ok(f.text().includes('Choisissez votre mot de passe'));const form=f.w.document.querySelector('form');form.elements.password.value='FixturePassword123';form.elements.confirm.value='FixturePassword123';form.dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));await wait();await wait();assert.ok(f.text().includes('Compte activé'));assert.deepEqual(f.errors,[]);}finally{f.close();}});
 
 test('administrator no longer has a simulator or alumni preview',async()=>{const f=await mount('MEMBERS',true);try{assert.ok(!f.text().includes('Vue Ancien membre'));f.w.dispatchEvent(new f.w.Event('hub:preview-alumni'));await wait();assert.ok(!f.text().includes('Mode test'));assert.ok(!f.text().includes('E-mails de test'));assert.deepEqual(f.errors,[]);}finally{f.close();}});
-test('member publishes an open need using production route and planned meeting',async()=>{const f=await mount();try{await f.click('Profil');await f.click('J’active personnellement ma liaison');await f.click('Participer');await f.click('Solliciter une suppléance');assert.ok(f.text().includes('Signaler un besoin de suppléance'));const form=f.w.document.querySelector('form');form.elements.date.value='2099-02-05';form.elements.note.value='Besoin de remplacement';form.dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));await wait();await wait();assert.ok(f.text().includes('Besoin publié'));assert.ok(f.calls.some(c=>c.url.endsWith('/alumni-space/replacement-needs')&&c.method==='POST'));assert.deepEqual(f.errors,[]);}finally{f.close();}});
+test('member without business bridge publishes an open replacement need',async()=>{const f=await mount();try{assert.ok(!f.text().includes('Mon activité OFF'));await f.click('Participer');await f.click('Solliciter une suppléance');assert.ok(f.text().includes('Signaler un besoin de suppléance'));const form=f.w.document.querySelector('form');form.elements.date.value='2099-02-05';form.elements.note.value='Besoin de remplacement';form.dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));await wait();await wait();assert.ok(f.text().includes('Besoin publié'));assert.ok(f.calls.some(c=>c.url.endsWith('/alumni-space/replacement-needs')&&c.method==='POST'));assert.deepEqual(f.errors,[]);}finally{f.close();}});
 test('alumnus opens email deep link and accepts via production route',async()=>{const f=await mount('ALUMNI',false,'https://hub.test/?substitutions=1');try{assert.ok(f.text().includes('Suppléances recherchées'));await f.click('Je m’engage à assurer la suppléance');assert.ok(f.text().includes('Test Membre a accepté de remplacer Membre actif le 2099-02-05.'));assert.ok(f.calls.some(c=>c.url.endsWith('/alumni-space/replacement-needs/9')&&c.method==='POST'));assert.deepEqual(f.errors,[]);}finally{f.close();}});
 
 test('network failures and server errors preserve the logged-in session; 401 clears it',async()=>{const f=await mount();try{
@@ -121,13 +121,19 @@ test('shared event notifications open their calendar month in both environments'
 });
 
 
-test('official home shows personal OFF figures below invited guests',async()=>{const f=await mount();try{
+test('official home hides OFF figures until business opt-in, then shows them below guests',async()=>{const f=await mount();try{
+ assert.ok(!f.w.document.querySelector('section[aria-label="Mon activité OFF"]'));
+ assert.ok(f.w.document.querySelector('.availabilityLink'));
+ await f.click('Profil');await f.click('J’active personnellement ma liaison');await f.click('Accueil');
  const section=f.w.document.querySelector('section[aria-label="Mon activité OFF"]');assert.ok(section);
  assert.ok(f.text().indexOf('Invité du jeudi')<f.text().indexOf('Mon activité OFF'));
  const cards=[...section.querySelectorAll('.adminStats>div')];assert.equal(cards.length,4);
  assert.deepEqual(cards.map(x=>x.querySelector('span').textContent),['CA généré par les membres OFF grâce à moi','Mon CA généré grâce aux membres OFF','TAT effectués','Recommandations envoyées']);
  assert.deepEqual(cards.map(x=>x.querySelector('b').textContent.replace(/[\s€]/g,'')),['1250,50','375,00','4','7']);
- assert.ok(section.textContent.includes('Mandature en cours'));assert.deepEqual(f.errors,[]);
+ assert.ok(section.textContent.includes('Mandature en cours'));
+ await f.click('Profil');await f.click('Désactiver ma liaison');await f.click('Accueil');
+ assert.ok(!f.w.document.querySelector('section[aria-label="Mon activité OFF"]'));
+ assert.ok(f.w.document.querySelector('.availabilityLink'));assert.deepEqual(f.errors,[]);
 }finally{f.close();}});
 
 
@@ -176,8 +182,9 @@ test('home keeps one compact link and replacement availability is grouped by asc
    if(url.endsWith('/me/home'))return {ok:true,json:async()=>({...await r.json(),availableSubstitutes:offers})};
    return r;
   };
-  await f.click('Profil');await f.click('J’active personnellement ma liaison');await f.click('Accueil');
+  await f.click('Planning');await f.click('Accueil');
   assert.equal(f.w.document.querySelectorAll('.availabilityLink').length,1);
+  assert.ok(!f.text().includes('Mon activité OFF'));
   assert.ok(!f.text().includes('Suppléant 1'));assert.ok(f.text().includes('Qui est invité ?'));
   assert.ok(!f.w.document.querySelector('section[aria-label="Suppléants disponibles"]'));
   await f.click('Consultez les disponibilités des suppléants');
