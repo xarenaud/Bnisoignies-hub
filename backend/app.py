@@ -1202,6 +1202,28 @@ def create_app():
         enabled=full_network_enabled(account)
         return {"features":{k:enabled for k in ["REFERRALS","BUSINESS","ONE_TO_ONE","ACTIVITY_SCORE"]},"networkType":account.member.network_type,"networkAccessEnabled":enabled,"networkModuleEnabled":enabled,"networkBridgeEnabled":network_bridge_enabled(account),"fullNetworkEnabled":enabled,"isSystemAdmin":False,"environment":"ALUMNI" if alumni_member(account.member) else "MEMBERS"}
 
+    @app.get("/api/directory")
+    def member_directory():
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        official=official_member(account.member)
+        if not official and not alumni_member(account.member):
+            return {"error":"Réservé aux membres et anciens actifs."},403
+        out=[]
+        for member in Member.query.order_by(Member.last_name,Member.first_name,Member.id).all():
+            current=official_member(member)
+            activated=bool(member.user_account and member.user_account.status=="ACTIVE")
+            if current:
+                # Alumni only see officials who personally opted into business contact.
+                if not official and not (activated and member.alumni_bridge_enabled):continue
+                category="MEMBERS"
+            elif alumni_member(member) and activated:category="ALUMNI"
+            else:continue
+            out.append({"id":member.id,"firstName":member.first_name,"lastName":member.last_name,
+                "company":member.company,"activity":member.activity,"phone":member.phone,
+                "email":member.email or (member.user_account.email if activated else None),"category":category})
+        return jsonify(out)
+
     @app.get("/api/network/members")
     def network_members():
         account,err=require_feature("REFERRALS")

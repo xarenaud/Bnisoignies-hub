@@ -269,3 +269,30 @@ test('announcement web links are clickable without embedding the sale website or
  assert.ok(!text.querySelector('img'));assert.ok(!f.w.document.querySelector('iframe'));assert.ok(text.textContent.includes('javascript:alert(1)'));assert.deepEqual(f.errors,[]);
  }finally{f.close();}
 });
+
+test('directory opens in member Resources and next to alumni TàT, with search and contact links',async()=>{
+ for(const environment of ['MEMBERS','ALUMNI']){const f=await mount(environment);try{
+  const normal=f.w.fetch;
+  f.w.fetch=async(url,options={})=>url.endsWith('/directory')?{ok:true,json:async()=>[
+   {id:2,firstName:'Amélie',lastName:'Exemple',company:'Atelier Lumière',activity:'Électricité',phone:'+32 470 00 00 00',email:'amelie@example.test',category:'MEMBERS'},
+   {id:3,firstName:'Jean',lastName:'Ancien',company:'Garage Exemple',activity:'Automobile',category:'ALUMNI'}
+  ]}:normal(url,options);
+  await f.click(environment==='ALUMNI'?'Échanges':'Ressources');
+  if(environment==='ALUMNI'){
+   const labels=[...f.w.document.querySelectorAll('main .toolbar button')].map(x=>x.textContent.trim());
+   assert.equal(labels.indexOf('Annuaire'),labels.indexOf('TàT')+1);
+  }
+  await f.click('Annuaire');
+  const directory=f.w.document.querySelector('section[aria-label="Annuaire des membres"]');assert.ok(directory);
+  assert.equal(directory.querySelectorAll('article').length,2);
+  assert.equal(directory.querySelector('a[href^="tel:"]').getAttribute('href'),'tel:+32470000000');
+  assert.equal(directory.querySelector('a[href^="mailto:"]').getAttribute('href'),'mailto:amelie%40example.test');
+  await f.click('Anciens membres');assert.equal(directory.querySelectorAll('article').length,1);assert.ok(directory.textContent.includes('Jean Ancien'));
+  await f.click('Tous');
+  const search=directory.querySelector('input[type="search"]');
+  const setSearch=async value=>{Object.getOwnPropertyDescriptor(f.w.HTMLInputElement.prototype,'value').set.call(search,value);search.dispatchEvent(new f.w.Event('input',{bubbles:true}));await wait()};
+  await setSearch('electricite');assert.equal(directory.querySelectorAll('article').length,1);assert.ok(directory.textContent.includes('Amélie Exemple'));
+  await setSearch('inconnu');assert.equal(directory.querySelectorAll('article').length,0);assert.ok(directory.textContent.includes('Aucun membre ne correspond'));
+  assert.ok(f.w.document.querySelector('nav'));assert.ok(!f.calls.some(c=>c.method!=='GET'));assert.deepEqual(f.errors,[]);
+ }finally{f.close();}}
+});
