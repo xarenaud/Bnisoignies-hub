@@ -234,7 +234,7 @@ test('breaking news is shared by both environments, opens from Participate and t
    if(url.endsWith('/announcements/1/interest')){interested=JSON.parse(options.body).interested;return {ok:true,json:async()=>({})};}
    return normal(url,options);
   };
-  if(environment==='MEMBERS'){await f.click('Participer');await f.click('Annonce');}else await f.click('BREAKING NEWS');
+  if(environment==='MEMBERS'){await f.click('Participer');await f.click('Petites Annonces');}else await f.click('BREAKING NEWS');
   assert.ok(f.w.document.querySelector('.breakingNewsButton'));assert.ok(f.w.document.querySelector('[data-page="announcements"]'));
   assert.ok(f.text().includes('Places à vendre'));await f.click('Ça m’intéresse · 0');assert.ok(f.w.document.querySelector('.interestButton.interested'));assert.ok(interested);
   await f.click(' Publier une annonce');const form=f.w.document.querySelector('.breakingNewsPage form');form.elements.subject.value='Je vends';form.elements.description.value='Un bureau';form.dispatchEvent(new f.w.Event('submit',{bubbles:true,cancelable:true}));await wait();await wait();
