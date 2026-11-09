@@ -188,7 +188,7 @@ def security_headers(response):
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
     response.headers['X-Frame-Options'] = 'DENY'
     response.headers['Content-Security-Policy'] = "default-src 'self'; img-src 'self'; style-src 'self'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
-    if request.path == '/static/mailing-inter-bni.html':
+    if request.path in {'/static/mailing-inter-bni.html', '/static/mailing-inter-bni-rappel-20261112.html'}:
         # Presentation-only email preview: inline styles, no scripts or forms.
         response.headers['Content-Security-Policy'] = "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
     if request.path.startswith(('/api', '/admin', '/register.php', '/event/register.php')):
@@ -531,6 +531,10 @@ def invitation_test():
         db.execute("CREATE TABLE IF NOT EXISTS invitation_tests (request_id TEXT PRIMARY KEY, status TEXT NOT NULL, created_at TEXT NOT NULL)")
     data = request.get_json(silent=True) or {}
     request_id = data.get('requestId') if isinstance(data, dict) else None
+    template = data.get('template', 'invitation') if isinstance(data, dict) else None
+    if template not in {'invitation', 'rappel-20261112'}:
+        return jsonify(error='Modèle invalide.'), 422
+    reminder = template == 'rappel-20261112'
     if not isinstance(request_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{12,80}', request_id):
         return jsonify(error='Identifiant de demande invalide.'), 422
     with database() as db:
@@ -540,7 +544,7 @@ def invitation_test():
             return jsonify(status=existing['status'], recipient=recipient)
         db.execute('INSERT INTO invitation_tests VALUES(?,?,?)', (request_id, 'sending', datetime.now(ZoneInfo('Europe/Brussels')).isoformat()))
     message = EmailMessage()
-    message['Subject'] = 'INTER BNI 26/11/2026 - Ford Steveny Soignies'
+    message['Subject'] = ('[VALIDATION] RAPPEL : INTER BNI 26/11/2026 - Ford Steveny Soignies' if reminder else 'INTER BNI 26/11/2026 - Ford Steveny Soignies')
     message['From'] = 'hub@bim-soignies.be'
     message['To'] = recipient
     message['Reply-To'] = 'event@bim-soignies.be'
@@ -548,13 +552,16 @@ def invitation_test():
     from email.utils import formatdate
     message['Date'] = formatdate(localtime=False)
     message.set_content("INVITATION TEST — Inter BNI Soignies\nJeudi 26 novembre 2026, de 7 h à 10 h 30\nGarage Ford Steveny Soignies, chaussée de Mons 71, 7060 Soignies\n16 groupes, une volonté d’avancer ensemble !\nParticipation : 10 EUR par personne.\nInscription avec obligation de paiement, y compris en cas d’absence.\nInformations et inscription : https://event.bim-soignies.be/#inscription\nContact : event@bim-soignies.be\n")
-    message.add_alternative((Path(app.static_folder) / 'mailing-inter-bni.html').read_text(), subtype='html')
+    if reminder:
+        message.set_content((Path(app.static_folder) / 'mailing-inter-bni-rappel-20261112.txt').read_text())
+    html_name = 'mailing-inter-bni-rappel-20261112.html' if reminder else 'mailing-inter-bni.html'
+    message.add_alternative((Path(app.static_folder) / html_name).read_text(), subtype='html')
     try:
         send_notification(message)
     except Exception as error:
         with database() as db:
             db.execute("UPDATE invitation_tests SET status='failed' WHERE request_id=?", (request_id,))
-        return jsonify(status='failed', error=type(error).__name__), 502
+        return jsonify(status='failed', error=type(error).__name__, smtpCode=getattr(error, 'smtp_code', None)), 502
     with database() as db:
         db.execute("UPDATE invitation_tests SET status='accepted_by_smtp' WHERE request_id=?", (request_id,))
     return jsonify(status='accepted_by_smtp', recipient=recipient, sender='hub@bim-soignies.be', messageId=str(message['Message-ID']))
@@ -671,3 +678,4 @@ def expense_payment_label(ref):
 
 from expense_notes import install as install_expense_notes
 expense_service = install_expense_notes(app, database, admin_required, same_origin, send_notification, ADMIN_PASSWORD, NOTIFICATIONS_ENABLED)
+
