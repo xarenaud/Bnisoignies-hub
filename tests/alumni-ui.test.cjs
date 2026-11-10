@@ -296,3 +296,22 @@ test('directory opens in member Resources and next to alumni TàT, with search a
   assert.ok(f.w.document.querySelector('nav'));assert.ok(!f.calls.some(c=>c.method!=='GET'));assert.deepEqual(f.errors,[]);
  }finally{f.close();}}
 });
+
+test('selecting a calendar date shows the welcome roles, guests and who replaces whom',async()=>{
+ const f=await mount();try{
+  const normal=f.w.fetch;
+  f.w.fetch=async(url,options={})=>{
+   if(url.includes('/agenda?')){const month=new URL(url).searchParams.get('month');return {ok:true,json:async()=>({month,nextRole:null,items:[{id:'meeting-4',meetingId:4,detailsAvailable:true,kind:'MEETING',date:month+'-19',type:'REGULAR',status:'PLANNED',startTime:'07:00',location:'Salle'}]})};}
+   if(url.endsWith('/agenda/meetings/4'))return {ok:true,json:async()=>({assignments:[{id:1,duty:'Accueil des invités',member:'Simon Accueil',status:'PUBLISHED'}],guests:[{id:'guest-1',name:'Invité Exemple',invitedBy:'Amélie Accueil'},{id:'substitute-1',name:'Jean François CROHIN',replaces:'Laurent SLUYS'}]})};
+   return normal(url,options);
+  };
+  await f.click('Planning');
+  const day=[...f.w.document.querySelectorAll('.agendaDay')].find(b=>b.querySelector('b').textContent==='19');assert.ok(day);day.click();await wait();await wait();
+  const details=f.w.document.querySelector('[aria-label="Détails de la réunion"]');assert.ok(details);
+  assert.ok(details.textContent.includes('Accueil des invités : Simon Accueil'));
+  assert.ok(details.textContent.includes('Invité Exemple'));
+  assert.ok(details.textContent.includes('Jean François CROHIN'));
+  assert.ok(details.textContent.includes('Suppléant de Laurent SLUYS'));
+  assert.ok(f.calls.every(c=>c.method==='GET'));assert.deepEqual(f.errors,[]);
+ }finally{f.close();}
+});

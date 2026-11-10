@@ -1,4 +1,4 @@
-import os, secrets, io, smtplib, unicodedata
+import os, secrets, io, smtplib, unicodedata, json
 from email.message import EmailMessage
 
 # Canonical HUB origin: account tokens must never be linked to another application.
@@ -74,6 +74,12 @@ class MemberNetworkHistory(db.Model):
     start_date=db.Column(db.Date,nullable=False,default=date.today)
     end_date=db.Column(db.Date)
     changed_by_account_id=db.Column(db.Integer,db.ForeignKey("user_accounts.id"),nullable=True,index=True)
+    created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
+
+class NotificationRepairRun(db.Model):
+    __tablename__="notification_repair_runs"
+    key=db.Column(db.String(100),primary_key=True)
+    report=db.Column(db.Text,nullable=False)
     created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
 
 class FeatureFlag(db.Model):
@@ -847,6 +853,64 @@ def create_app():
         db.session.commit()
         return {"sentCount":sent,"skippedCount":skipped}
 
+    def replacement_notices(x,confirmed):
+        message=(f"{member_name(x.alumni_id)} a accepté de remplacer {member_name(x.official_id)} le {x.date.isoformat()}." if confirmed else
+            f"{member_name(x.official_id)} a sélectionné la disponibilité de {member_name(x.alumni_id)} pour le {x.date.isoformat()}. En attente de confirmation par l’ancien membre dans le HUB.")
+        recipients={x.official_id,x.alumni_id}
+        if confirmed:recipients.update(m.id for m in guest_reviewers())
+        for mid in recipients:
+            notify(mid,"SUBSTITUTION_ACCEPTED" if confirmed else "SUBSTITUTION_REQUEST","Suppléance confirmée" if confirmed else "Suppléance à confirmer",message,"substitutions")
+        return message,len(recipients)
+
+    def replacement_confirmation_emails(x,actor,entity,message):
+        return {"emailSent":replacement_mail(x.official_id,"Suppléance confirmée",message),
+            "alumniEmailSent":replacement_mail(x.alumni_id,"Votre engagement de suppléance est confirmé",message),
+            "welcomeCommitteeEmails":welcome_replacement_emails(x.official_id,x.alumni_id,x.date,actor,entity,x.id)}
+
+    def repair_replacement_notifications():
+        # Explicit one-off resend requested by the administrator. Persist notices and
+        # the unique run marker in one transaction before sending any mail.
+        key="suppl-notices-20261110-v1"
+        if db.engine.dialect.name=="postgresql":db.session.execute(text("SELECT pg_advisory_xact_lock(20261110, 731)"))
+        existing=db.session.get(NotificationRepairRun,key)
+        if existing:
+            result=json.loads(existing.report);db.session.commit()
+            app.logger.warning("HUB_SUPPLEANCE_REPORT %s",json.dumps(result,ensure_ascii=False));return result
+        report={"confirmed":0,"requested":0,"notifications":0,"smtpAccepted":0,"mailAttempts":0,"jfLaurent":[]}
+        def norm(value):return ''.join(c for c in unicodedata.normalize('NFKD',value or '').casefold() if c.isalnum() and not unicodedata.combining(c))
+        jobs=[];seen=set()
+        today=datetime.now(ZoneInfo("Europe/Brussels")).date()
+        for model,entity in [(AlumniSubstitution,"substitution"),(AlumniReplacementNeed,"replacement_need")]:
+            rows=model.query.filter(model.date>=today,model.status.in_(["REQUESTED","ACCEPTED"])).order_by(model.date,model.id).all()
+            for row in rows:
+                if not row.alumni_id or not future_replacement_meeting(row.date):continue
+                official=db.session.get(Member,row.official_id);alumni=db.session.get(Member,row.alumni_id)
+                if not official or not alumni:continue
+                if norm(official.first_name)=='laurent' and norm(official.last_name)=='sluys' and norm(alumni.first_name)=='jeanfrancois' and norm(alumni.last_name)=='crohin':
+                    report['jfLaurent'].append({"date":row.date.isoformat(),"status":row.status,"source":entity,"id":row.id})
+                identity=(row.date,row.official_id,row.alumni_id,row.status)
+                if identity in seen:continue
+                seen.add(identity)
+                confirmed=row.status=='ACCEPTED'
+                message,count=replacement_notices(row,confirmed)
+                report['confirmed' if confirmed else 'requested']+=1;report['notifications']+=count
+                jobs.append((row,entity,message,confirmed))
+                audit(None,"REPLACEMENT_NOTIFICATIONS_REPLAYED",entity,row.id,row.status)
+        db.session.add(NotificationRepairRun(key=key,report=json.dumps(report)));db.session.commit()
+        app.logger.warning("HUB_SUPPLEANCE_NOTICES_PERSISTED %s",json.dumps(report,ensure_ascii=False))
+        for row,entity,message,confirmed in jobs:
+            report['mailAttempts']+=2
+            report['smtpAccepted']+=int(bool(replacement_mail(row.official_id,'Suppléance confirmée' if confirmed else 'Suppléance à confirmer',message)))
+            report['smtpAccepted']+=int(bool(replacement_mail(row.alumni_id,'Votre suppléance est confirmée' if confirmed else 'Merci de confirmer votre suppléance',message)))
+            if confirmed:
+                result=welcome_replacement_emails(row.official_id,row.alumni_id,row.date,None,entity,row.id)
+                report['smtpAccepted']+=result['sentCount'];report['committeeSkipped']=report.get('committeeSkipped',0)+result['skippedCount']
+        db.session.get(NotificationRepairRun,key).report=json.dumps(report);db.session.commit()
+        app.logger.warning("HUB_SUPPLEANCE_REPORT %s",json.dumps(report,ensure_ascii=False))
+        return report
+
+    app.extensions['repair_replacement_notifications']=repair_replacement_notifications
+
     def replacement_need_payload(x,viewer_id):
         meeting=future_replacement_meeting(x.date)
         participant=viewer_id in {x.official_id,x.alumni_id}
@@ -913,12 +977,11 @@ def create_app():
         if changed!=1:db.session.rollback();return {"error":"Un autre ancien a déjà accepté cette suppléance."},409
         db.session.refresh(x)
         message=f"{member_name(x.alumni_id)} a accepté de remplacer {member_name(x.official_id)} le {x.date.isoformat()}."
-        notify(x.official_id,"SUBSTITUTION_ACCEPTED","Suppléance confirmée",message,"substitutions")
+        message,_=replacement_notices(x,True)
         for m in Member.query.all():
-            if alumni_member(m) and m.user_account and m.user_account.status=="ACTIVE":notify(m.id,"SUBSTITUTION_FILLED","Votre engagement est confirmé" if m.id==x.alumni_id else "Suppléance pourvue",message,"substitutions")
+            if m.id!=x.alumni_id and alumni_member(m) and m.user_account and m.user_account.status=="ACTIVE":notify(m.id,"SUBSTITUTION_FILLED","Votre engagement est confirmé" if m.id==x.alumni_id else "Suppléance pourvue",message,"substitutions")
         audit(account,"REPLACEMENT_NEED_ACCEPTED","replacement_need",x.id);db.session.commit()
-        payload={**replacement_need_payload(x,account.member_id),"emailSent":replacement_mail(x.official_id,"Suppléance confirmée",message)}
-        payload["welcomeCommitteeEmails"]=welcome_replacement_emails(x.official_id,x.alumni_id,x.date,account,"replacement_need",x.id)
+        payload={**replacement_need_payload(x,account.member_id),**replacement_confirmation_emails(x,account,"replacement_need",message)}
         return payload
 
     @app.route("/api/alumni-space/availability",methods=["GET","POST"])
@@ -976,8 +1039,10 @@ def create_app():
         if AlumniSubstitution.query.filter_by(alumni_id=target.id,date=availability.date,status="ACCEPTED").first():return {"error":"Cet ancien est déjà engagé à cette date."},409
         if replacement_conflict(availability.date,account.member_id,target.id):return {"error":"Un remplacement est déjà accepté pour cette date."},409
         x=AlumniSubstitution(official_id=account.member_id,alumni_id=target.id,availability_id=availability.id,date=availability.date)
-        db.session.add(x);notify(target.id,"SUBSTITUTION_REQUEST","Demande de suppléance",member_name(account.member_id)+" vous sollicite pour le "+availability.date.isoformat(),"substitutions")
-        db.session.commit();return substitution_payload(x),201
+        db.session.add(x);db.session.flush();message,_=replacement_notices(x,False)
+        audit(account,"ALUMNI_SUBSTITUTION_REQUESTED","substitution",x.id)
+        db.session.commit()
+        return {**substitution_payload(x),"emailSent":replacement_mail(x.official_id,"Suppléance à confirmer",message),"alumniEmailSent":replacement_mail(target.id,"Merci de confirmer votre suppléance",message)},201
 
     @app.post("/api/alumni-space/availability/<int:item_id>/accept")
     def accept_available_substitute(item_id):
@@ -999,12 +1064,10 @@ def create_app():
         x=AlumniSubstitution(official_id=account.member_id,alumni_id=member.id,availability_id=offer.id,date=offer.date,status="ACCEPTED")
         db.session.add(x);db.session.flush()
         message=f"{member_name(account.member_id)} a accepté la proposition de suppléance de {member_name(member.id)} pour le {offer.date.strftime('%d/%m/%Y')}. Le remplacement est confirmé."
-        for mid in {account.member_id,member.id}:notify(mid,"SUBSTITUTION_ACCEPTED","Suppléance confirmée",message,"substitutions")
+        message,_=replacement_notices(x,True)
         audit(account,"AVAILABLE_SUBSTITUTE_ACCEPTED","substitution",x.id,f"availability_id={offer.id}");db.session.commit()
         payload=substitution_payload(x)
-        payload["emailSent"]=replacement_mail(account.member_id,"Suppléance confirmée",message)
-        payload["alumniEmailSent"]=replacement_mail(member.id,"Votre proposition de suppléance est acceptée",message)
-        payload["welcomeCommitteeEmails"]=welcome_replacement_emails(account.member_id,member.id,offer.date,account,"substitution",x.id)
+        payload.update(replacement_confirmation_emails(x,account,"substitution",message))
         return payload,201
 
     @app.patch("/api/alumni-space/substitutions/<int:item_id>")
@@ -1032,19 +1095,11 @@ def create_app():
         else:return {"error":"Action non autorisée."},403
         other=x.official_id if account.member_id==x.alumni_id else x.alumni_id
         confirmation=f"{member_name(x.alumni_id)} a accepté de remplacer {member_name(x.official_id)} le {x.date.isoformat()}."
-        notify(other,"SUBSTITUTION_RESPONSE","Suppléance confirmée" if status=="ACCEPTED" else "Suivi de suppléance",confirmation if status=="ACCEPTED" else x.date.isoformat()+" : "+x.status,"substitutions")
+        if status=="ACCEPTED":confirmation,_=replacement_notices(x,True)
+        else:notify(other,"SUBSTITUTION_RESPONSE","Suivi de suppléance",x.date.isoformat()+" : "+x.status,"substitutions")
         audit(account,"ALUMNI_SUBSTITUTION_UPDATED","substitution",x.id,status);db.session.commit()
         payload=substitution_payload(x)
-        if status=="ACCEPTED":
-            # Recipient only, after persistence; repeated acceptance is rejected above.
-            target=db.session.get(Member,x.official_id)
-            email=target.user_account.email if target.user_account else target.email
-            base=HUB_APP_URL
-            try:payload["emailSent"]=send_simple_email(email,"HUB — Suppléance confirmée",f"Bonjour {target.first_name},\n\n{confirmation}\n\nOuvre ton app pour consulter la suppléance :\n{base}/\n")
-            except Exception:
-                app.logger.exception("Substitution confirmation email delivery failed")
-                payload["emailSent"]=False
-            payload["welcomeCommitteeEmails"]=welcome_replacement_emails(x.official_id,x.alumni_id,x.date,account,"substitution",x.id)
+        if status=="ACCEPTED":payload.update(replacement_confirmation_emails(x,account,"substitution",confirmation))
         return payload
 
     def member_name(member_id):
@@ -1652,13 +1707,7 @@ def create_app():
         meeting=next((m for m in meetings if m.date>today or not m.start_time or m.start_time>=now.time().replace(tzinfo=None)),None)
         next_payload=None
         if meeting:
-            assignments=DutyAssignment.query.filter(DutyAssignment.meeting_id==meeting.id,DutyAssignment.status.in_(["PUBLISHED","TO_REASSIGN"])).all()
-            guests=NetworkVisitor.query.filter(NetworkVisitor.visit_date==meeting.date,NetworkVisitor.status!="DECLINED").all()
-            legacy=MemberRequest.query.filter_by(type="INVITATION",event_date=meeting.date).all()
-            names={g.name.strip().casefold() for g in guests}
-            next_payload={**meeting_payload(meeting),"assignments":[assignment_payload(a) for a in assignments if official_member(db.session.get(Member,a.member_id))],
-                "guests":[{"id":f"visitor-{g.id}","name":g.name,"company":g.company,"invitedBy":member_name(g.invited_by_member_id)} for g in guests]+
-                    [{"id":f"request-{g.id}","name":g.guest_name,"company":None,"invitedBy":member_name(g.member_id)} for g in legacy if g.guest_name and g.guest_name.strip().casefold() not in names]}
+            next_payload=meeting_details_payload(meeting)
         return {"memberStats":None,"groupStats":None,"offActivity":member_statistics(account.member_id,active_mandate()) if network_bridge_enabled(account) else None,"availableSubstitutes":[availability_payload(x) for x in visible_alumni_availability()],"nextMeeting":next_payload}
 
     @app.get("/api/network/leaderboard")
@@ -2920,6 +2969,40 @@ Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet e-mai
         if not assignment or assignment.mandate_id!=mandate_id:return {"error":"Attribution introuvable."},404
         assignment.status="INACTIVE";db.session.commit();return {"status":"ok"}
 
+    def confirmed_replacements(day):
+        out=[];seen=set()
+        for model in [AlumniSubstitution,AlumniReplacementNeed]:
+            for row in model.query.filter_by(date=day,status="ACCEPTED").order_by(model.id).all():
+                if not row.alumni_id or (row.alumni_id,row.official_id) in seen:continue
+                seen.add((row.alumni_id,row.official_id))
+                member=db.session.get(Member,row.alumni_id)
+                out.append({"id":f"substitute-{row.alumni_id}-{row.official_id}","kind":"SUBSTITUTE","name":member_name(row.alumni_id),"company":member.company if member else None,"memberId":row.alumni_id,"replacesMemberId":row.official_id,"replaces":member_name(row.official_id)})
+        return out
+
+    def meeting_details_allowed(account,meeting):
+        return official_member(account.member) or (alumni_member(account.member) and any(x['memberId']==account.member_id for x in confirmed_replacements(meeting.date)))
+
+    def meeting_details_payload(meeting):
+        assignments=DutyAssignment.query.filter(DutyAssignment.meeting_id==meeting.id,DutyAssignment.status.in_(["PUBLISHED","TO_REASSIGN"])).all()
+        guests=NetworkVisitor.query.filter(NetworkVisitor.visit_date==meeting.date,NetworkVisitor.status!="DECLINED").all()
+        legacy=MemberRequest.query.filter_by(type="INVITATION",event_date=meeting.date).all()
+        names={g.name.strip().casefold() for g in guests}
+        substitutes=confirmed_replacements(meeting.date) if meeting.status!="CANCELLED" and meeting.type!="NO_MEETING" else []
+        return {**meeting_payload(meeting),"assignments":[assignment_payload(a) for a in assignments if official_member(db.session.get(Member,a.member_id))],
+            "guests":[{"id":f"visitor-{g.id}","kind":"GUEST","name":g.name,"company":g.company,"invitedBy":member_name(g.invited_by_member_id)} for g in guests]+
+                [{"id":f"request-{g.id}","kind":"GUEST","name":g.guest_name,"company":None,"invitedBy":member_name(g.member_id)} for g in legacy if g.guest_name and g.guest_name.strip().casefold() not in names]+substitutes}
+
+    @app.get("/api/agenda/meetings/<int:meeting_id>")
+    def agenda_meeting_details(meeting_id):
+        account,_=bearer_account()
+        if not account:return {"error":"Authentification requise."},401
+        meeting=db.session.get(Meeting,meeting_id)
+        if not meeting:return {"error":"Réunion introuvable."},404
+        if not meeting_details_allowed(account,meeting):return {"error":"Détails réservés aux membres et au suppléant confirmé pour cette réunion."},403
+        data=meeting_details_payload(meeting)
+        if not official_member(account.member):data.pop('notes',None)
+        return data
+
     def meeting_payload(m):
         return {"id":m.id,"date":m.date.isoformat(),"startTime":m.start_time.strftime("%H:%M") if m.start_time else None,"type":m.type,"location":m.location,"status":m.status,"notes":m.notes}
 
@@ -3437,7 +3520,7 @@ Cette demande est également disponible dans HUB Soignies.""")
         items=[]
         for meeting in Meeting.query.filter(Meeting.date>=start,Meeting.date<end).order_by(Meeting.date).all():
             # A common calendar does not expose guest lists, private notes or board data.
-            items.append({"id":"meeting-"+str(meeting.id),"kind":"MEETING","date":meeting.date.isoformat(),"startTime":meeting.start_time.strftime("%H:%M") if meeting.start_time else None,"type":meeting.type,"status":meeting.status,"location":meeting.location})
+            items.append({"id":"meeting-"+str(meeting.id),"meetingId":meeting.id,"detailsAvailable":meeting_details_allowed(account,meeting),"kind":"MEETING","date":meeting.date.isoformat(),"startTime":meeting.start_time.strftime("%H:%M") if meeting.start_time else None,"type":meeting.type,"status":meeting.status,"location":meeting.location})
         for event in MemberRequest.query.filter(MemberRequest.type=="EVENT",MemberRequest.event_date>=start,MemberRequest.event_date<end).order_by(MemberRequest.event_date,MemberRequest.id).all():
             owner=db.session.get(Member,event.member_id)
             items.append({"id":"event-"+str(event.id),"kind":"EVENT","date":event.event_date.isoformat(),"startTime":event.event_time,"location":event.event_location,"title":event.title or "Événement partagé","message":event.message,"member":member_name(event.member_id),"origin":"ALUMNI" if owner and (owner.network_type=="OFF" or alumni_member(owner)) else "MEMBERS","attachmentId":event.id if event.attachment_data else None,"attachmentName":event.attachment_name})
@@ -3607,6 +3690,10 @@ Cette demande est également disponible dans HUB Soignies.""")
                 if not assignment:
                     db.session.add(RoleAssignment(mandate_id=mandate.id,role_id=role.id,member_id=account.member_id,status="ACTIVE"))
                 db.session.commit()
+        if db.engine.dialect.name=="postgresql":
+            try:repair_replacement_notifications()
+            except Exception:
+                db.session.rollback();app.logger.exception("HUB_SUPPLEANCE_REPAIR_FAILED")
     return app
 
 app=create_app()

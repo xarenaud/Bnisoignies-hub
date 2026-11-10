@@ -49,8 +49,8 @@ class LiveReplacementTests(unittest.TestCase):
         with patch.dict(os.environ,{'SMTP_HOST':'smtp.example.test','SMTP_FROM':'hub@example.test','SMTP_USER':'','SMTP_SSL':'false'}),patch.object(hub.smtplib,'SMTP') as smtp:
             r=self.accept(nid);self.assertEqual(r.status_code,200,r.get_json());payload=r.get_json()
             self.assertEqual(payload['alumniId'],self.ids['off']);self.assertEqual(payload['officialId'],self.ids['active']);self.assertEqual(payload['location'],'Lieu privé de réunion')
-            msg=smtp.return_value.send_message.call_args.args[0];self.assertEqual(msg['To'],'active@example.test');self.assertIn('off Test a accepté de remplacer active Test le '+self.day.isoformat(),msg.get_content())
-            self.assertEqual(self.accept(nid,'off2').status_code,409);self.assertEqual(self.accept(nid).status_code,409);self.assertEqual(smtp.return_value.send_message.call_count,1)
+            msg=next(c.args[0] for c in smtp.return_value.send_message.call_args_list if c.args[0]['To']=='active@example.test');self.assertEqual(msg['To'],'active@example.test');self.assertIn('off Test a accepté de remplacer active Test le '+self.day.isoformat(),msg.get_content())
+            self.assertEqual(self.accept(nid,'off2').status_code,409);self.assertEqual(self.accept(nid).status_code,409);self.assertEqual(smtp.return_value.send_message.call_count,2)
         self.assertIsNone(self.get('/api/alumni-space/replacement-needs','off2').get_json()[0]['location'])
         notices=self.get('/api/me/notifications').get_json()['items'];notice=next(n for n in notices if n['title']=='Suppléance confirmée')
         self.assertIn('off Test a accepté de remplacer active Test',notice['message']);self.assertEqual(notice['link'],'substitutions')

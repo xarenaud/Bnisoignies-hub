@@ -33,14 +33,14 @@ class WelcomeCommitteeMailTests(unittest.TestCase):
                 else:r=self.post(path,{},'off')
                 self.assertEqual(r.status_code,200,r.get_json());self.assertEqual(r.get_json()['welcomeCommitteeEmails']['sentCount'],2)
                 messages=[c.args[0] for c in smtp.return_value.send_message.call_args_list]
-                self.assertEqual({m['To'] for m in messages},{'active@example.test','amelie@example.test','simon@example.test'})
+                self.assertEqual({m['To'] for m in messages},{'active@example.test','off@example.test','amelie@example.test','simon@example.test'})
                 for m in messages:
                     self.assertIn('off Test a accepté de remplacer active Test',m.get_content())
                     if 'comité' in m['Subject']:
                         self.assertIn('07:00',m.get_content());self.assertIn('Salle du groupe',m.get_content());self.assertIn('?agenda=',m.get_content())
                 if targeted:again=self.client.patch(path,headers=self.headers['off'],json={'status':'ACCEPTED'})
                 else:again=self.post(path,{},'off')
-                self.assertEqual(again.status_code,409);self.assertEqual(len(smtp.return_value.send_message.call_args_list),3)
+                self.assertEqual(again.status_code,409);self.assertEqual(len(smtp.return_value.send_message.call_args_list),4)
             self.day+=timedelta(days=7)
             hub.db.session.add(hub.Meeting(date=self.day,start_time=time(7),type='REGULAR',status='PLANNED',location='Salle du groupe'));hub.db.session.commit()
     def test_ambiguous_identity_never_sends_to_a_first_name_guess(self):
@@ -48,7 +48,7 @@ class WelcomeCommitteeMailTests(unittest.TestCase):
         rid=self.post('/api/alumni-space/replacement-needs',{'date':self.day.isoformat()}).get_json()['id']
         with patch.dict(os.environ,{'SMTP_HOST':'smtp.test','SMTP_FROM':'hub@example.test','SMTP_USER':'','SMTP_SSL':'false'}),patch.object(hub.smtplib,'SMTP') as smtp:
             r=self.post('/api/alumni-space/replacement-needs/'+str(rid),{},'off');self.assertEqual(r.status_code,200)
-            self.assertEqual({c.args[0]['To'] for c in smtp.return_value.send_message.call_args_list},{'active@example.test','amelie@example.test'})
+            self.assertEqual({c.args[0]['To'] for c in smtp.return_value.send_message.call_args_list},{'active@example.test','off@example.test','amelie@example.test'})
     def test_official_accepts_published_offer_once_and_notifies_all_parties(self):
         offer=self.post('/api/alumni-space/availability',{'date':self.day.isoformat()},'off').get_json()
         path='/api/alumni-space/availability/'+str(offer['id'])+'/accept'

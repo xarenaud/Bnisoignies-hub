@@ -47,7 +47,7 @@ class InvitationTests(unittest.TestCase):
         account.invitation_token='expired-fixture';account.invitation_expires_at=datetime.utcnow()-timedelta(hours=1);hub.db.session.commit()
         r=self.client.post('/api/auth/activate',json={'token':'expired-fixture','password':'FixturePassword123'})
         self.assertEqual(r.status_code,400);self.assertIn('expiré',r.get_json()['error'])
-    def test_substitution_confirmation_names_both_members_and_only_emails_recipient_once(self):
+    def test_substitution_confirmation_names_both_members_and_emails_both_once(self):
         day=datetime.utcnow().date()+timedelta(days=7)
         hub.db.session.add(hub.Meeting(date=day,type='REGULAR',status='PLANNED',location='Lieu de contrôle'))
         availability=hub.AlumniAvailability(member_id=self.ids['off'],date=day)
@@ -57,12 +57,12 @@ class InvitationTests(unittest.TestCase):
         with patch.dict(os.environ,{'SMTP_HOST':'smtp.example.test','SMTP_FROM':'hub@example.test','SMTP_USER':'','SMTP_SSL':'false','APP_URL':'https://cx-labs.be/Bnisoignies-hub'}),patch.object(hub.smtplib,'SMTP') as smtp:
             r=self.client.patch(f'/api/alumni-space/substitutions/{rid}',headers=self.headers['off'],json={'status':'ACCEPTED'})
             self.assertEqual(r.status_code,200,r.get_json());self.assertTrue(r.get_json()['emailSent'])
-            msg=smtp.return_value.send_message.call_args.args[0]
+            msg=next(c.args[0] for c in smtp.return_value.send_message.call_args_list if c.args[0]['To']=='active@example.test')
             self.assertEqual(msg['To'],'active@example.test');self.assertIsNone(msg['Cc']);self.assertIsNone(msg['Bcc'])
             self.assertIn('off Test a accepté de remplacer active Test le '+day.isoformat()+'.',msg.get_content())
             self.assertIn('https://hub.bim-soignies.be/',msg.get_content())
             r=self.client.patch(f'/api/alumni-space/substitutions/{rid}',headers=self.headers['off'],json={'status':'ACCEPTED'})
-            self.assertEqual(r.status_code,409);self.assertEqual(smtp.return_value.send_message.call_count,1)
+            self.assertEqual(r.status_code,409);self.assertEqual(smtp.return_value.send_message.call_count,2)
     def test_smtp_failure_does_not_undo_confirmed_substitution(self):
         day=datetime.utcnow().date()+timedelta(days=7)
         hub.db.session.add(hub.Meeting(date=day,type='REGULAR',status='PLANNED',location='Lieu de contrôle'))
