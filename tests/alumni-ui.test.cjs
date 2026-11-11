@@ -34,7 +34,7 @@ async function mount(environment='MEMBERS',admin=false,url='https://hub.test/',i
  const click=async label=>{const button=[...w.document.querySelectorAll('button')].find(b=>b.textContent===label);assert.ok(button,'Button: '+label);button.click();await wait();await wait();};
  return {w,errors,text,click,calls,close:()=>w.close()};
 }
-test('official UI only exposes business actions after personal consent',async()=>{const f=await mount();try{await f.click('Participer');assert.ok(f.text().includes('Envoyer une infomerciale'));assert.ok(![...f.w.document.querySelectorAll('button')].some(b=>b.textContent==='MPB'));await f.click('Profil');await f.click('J’active personnellement ma liaison');await f.click('Participer');assert.ok([...f.w.document.querySelectorAll('button')].some(b=>b.textContent==='MPB'));await f.click('Recommandations');assert.ok(f.text().includes('Ancien autorisé'));await f.click('Profil');await f.click('Désactiver ma liaison');await f.click('Participer');assert.ok(![...f.w.document.querySelectorAll('button')].some(b=>b.textContent==='MPB'));assert.deepEqual(f.errors,[]);}finally{f.close();}});
+test('official UI only exposes business actions after personal consent',async()=>{const f=await mount();try{await f.click('Participer');assert.ok(f.text().includes('Envoyer une infomerciale'));assert.ok(![...f.w.document.querySelectorAll('button')].some(b=>b.textContent==='MPB'));await f.click('Profil');await f.click('J’active personnellement ma liaison');await f.click('Participer');assert.ok([...f.w.document.querySelectorAll('button')].some(b=>b.textContent==='MPB'));await f.click('Recommandations');f.w.document.querySelector('[role=combobox]').focus();await wait();assert.ok(f.text().includes('Ancien autorisé'));await f.click('Profil');await f.click('Désactiver ma liaison');await f.click('Participer');assert.ok(![...f.w.document.querySelectorAll('button')].some(b=>b.textContent==='MPB'));assert.deepEqual(f.errors,[]);}finally{f.close();}});
 test('alumni UI has shared planning, exchanges and targeted substitutions',async()=>{const f=await mount('ALUMNI');try{assert.ok(f.text().includes('HUB Anciens'));const nav=[...f.w.document.querySelectorAll('nav button')].map(b=>b.textContent);assert.deepEqual(nav,['Accueil','Planning','Échanges','Suppléances','Profil']);assert.equal(f.w.document.querySelector('nav').parentElement,f.w.document.body);assert.equal(f.w.document.querySelectorAll('nav button svg').length,5);assert.equal(f.w.document.querySelectorAll('.actions button svg').length,4);await f.click('Échanges');assert.ok(f.text().includes('Donner une recommandation'));await f.click('Suppléances');assert.ok(f.text().includes('Proposer ma disponibilité'));await f.click('Profil');assert.ok(f.text().includes('Votre espace Anciens'));assert.deepEqual(f.errors,[]);}finally{f.close();}});
 test('inactive former member can request access without exposing the group',async()=>{const f=await mount('INACTIVE');try{assert.ok(f.text().includes('Demander mon passage chez les anciens'));assert.ok(!f.w.document.querySelector('nav'));assert.ok(!f.text().includes('Prochaine réunion'));assert.deepEqual(f.errors,[]);}finally{f.close();}});
 
@@ -313,5 +313,22 @@ test('selecting a calendar date shows the welcome roles, guests and who replaces
   assert.ok(details.textContent.includes('Jean François CROHIN'));
   assert.ok(details.textContent.includes('Suppléant de Laurent SLUYS'));
   assert.ok(f.calls.every(c=>c.method==='GET'));assert.deepEqual(f.errors,[]);
+ }finally{f.close();}
+});
+
+test('business recipient search filters names and companies and submits member IDs in all three forms',async()=>{
+ const f=await mount('ALUMNI');try{
+  const normal=f.w.fetch;f.w.fetch=async(url,opts={})=>url.endsWith('/network/members')?{ok:true,json:async()=>[{id:2,name:'Jean François CROHIN',company:'Toiture',networkType:'OFF'},{id:3,name:'Laurent SLUYS',company:'Électricité',networkType:'OFFICIAL_BNI'}]}:normal(url,opts);
+  await f.click('Échanges');
+  for(const [tab,name] of [['Recommandations','toMemberId'],['Business','creditedMemberId'],['TàT','partnerMemberId']]){
+   const btn=[...f.w.document.querySelectorAll('main .toolbar button')].find(b=>b.textContent.trim()===tab);btn.click();await wait();await wait();
+   const input=f.w.document.querySelector('[role=combobox]');assert.ok(input);input.focus();await wait();
+   assert.equal(f.w.document.querySelectorAll('[role=option]').length,2);
+   Object.getOwnPropertyDescriptor(f.w.HTMLInputElement.prototype,'value').set.call(input,'electricite');input.dispatchEvent(new f.w.Event('input',{bubbles:true}));await wait();
+   const options=f.w.document.querySelectorAll('[role=option]');assert.equal(options.length,1);assert.ok(options[0].textContent.includes('Laurent SLUYS'));options[0].click();await wait();
+   assert.equal(new f.w.FormData(input.form).get(name),'3');assert.equal(input.value,'Laurent SLUYS');assert.ok(input.checkValidity());
+   input.form.reset();await wait();assert.equal(new f.w.FormData(input.form).get(name),'');assert.equal(input.value,'');
+  }
+  assert.deepEqual(f.errors,[]);
  }finally{f.close();}
 });

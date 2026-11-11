@@ -52,7 +52,7 @@ class AlumniSpacesTests(unittest.TestCase):
         self.encode_all('active','off',201)
         self.encode_all('off','active',201)
         self.encode_all('off','off2',201)
-        self.encode_all('active','active2',403)
+        self.encode_all('active','active2',201)
         self.encode_all('off','admin',403)
         self.encode_all('off','former',403)
         self.bridge('active',False)

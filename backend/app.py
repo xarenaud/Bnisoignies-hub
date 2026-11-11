@@ -1300,7 +1300,7 @@ def create_app():
         own_alumni=alumni_member(account.member);other_alumni=alumni_member(other)
         own_opted=official_member(account.member) and account.member.alumni_bridge_enabled
         other_opted=official_member(other) and other.alumni_bridge_enabled
-        return bool((own_alumni and (other_alumni or other_opted)) or (own_opted and other_alumni))
+        return bool((own_alumni and (other_alumni or other_opted)) or (own_opted and (other_alumni or other_opted)))
 
     def referral_payload(x):
         return {"id":x.id,"fromMemberId":x.from_member_id,"fromMember":member_name(x.from_member_id),"toMemberId":x.to_member_id,"toMember":member_name(x.to_member_id),"contactName":x.contact_name,"company":x.company,"contactEmail":x.contact_email,"contactPhone":x.contact_phone,"notes":x.notes,"status":x.status,"estimatedValue":float(x.estimated_value) if x.estimated_value is not None else None,"closedAt":x.closed_at.isoformat() if x.closed_at else None,"businessAmount":float((BusinessThanks.query.filter_by(referral_id=x.id).first().amount)) if BusinessThanks.query.filter_by(referral_id=x.id).first() else None,"createdAt":x.created_at.isoformat(),"updatedAt":x.updated_at.isoformat() if x.updated_at else None}
