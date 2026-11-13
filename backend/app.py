@@ -458,6 +458,13 @@ def create_app():
             if membership.end_date and membership.end_date<today:continue
             if member.user_account and member.user_account.status in {"DISABLED","SUSPENDED"}:continue
             members.append({"firstName":member.first_name,"lastName":member.last_name,"company":member.company or "","activity":member.activity or ""})
+        unique={}
+        for item in members:
+            key=tuple(unicodedata.normalize("NFKC",item[k]).strip().casefold() for k in ("firstName","lastName","company"))
+            if key not in unique:unique[key]=item
+            elif item["activity"] and item["activity"] not in unique[key]["activity"]:
+                unique[key]["activity"]=" · ".join(filter(None,[unique[key]["activity"],item["activity"]]))
+        members=list(unique.values())
         meetings=[{"date":m.date.isoformat(),"startTime":m.start_time.strftime("%H:%M") if m.start_time else None,"type":m.type,"location":m.location or ""} for m in Meeting.query.filter(Meeting.date>=today,Meeting.date<=today+timedelta(days=180),Meeting.status!="CANCELLED",Meeting.type!="NO_MEETING").order_by(Meeting.date).limit(30).all()]
         response=jsonify({"members":members,"meetings":meetings,"updatedAt":today.isoformat()})
         response.headers["Cache-Control"]="public, max-age=300"

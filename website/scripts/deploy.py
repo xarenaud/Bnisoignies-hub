@@ -5,7 +5,14 @@ host=os.environ['OVH_HOST'];user=os.environ['OVH_USERNAME'];password=os.environ[
 base='www';marker='bni-site-check-'+secrets.token_hex(12)+'.txt';token=secrets.token_hex(24)
 if port==21:
     import ftplib
-    ftp=ftplib.FTP_TLS();ftp.connect(host,port,timeout=25);ftp.login(user,password);ftp.prot_p();ftp.cwd(base)
+    ftp=ftplib.FTP_TLS();ftp.connect(host,port,timeout=25)
+    try:
+        ftp.login(user,password);ftp.prot_p()
+    except ftplib.error_perm as exc:
+        if not str(exc).startswith("500"):raise
+        # Same legacy FTP transport as the existing, working OVH deployment.
+        ftp.close();ftp=ftplib.FTP();ftp.connect(host,port,timeout=25);ftp.login(user,password)
+    ftp.cwd(base)
     put=lambda name,data:ftp.storbinary('STOR '+name,io.BytesIO(data))
     delete=lambda name:ftp.delete(name)
 else:
