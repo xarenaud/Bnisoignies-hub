@@ -1,0 +1,27 @@
+name: Deploy public BNI Soignies website
+on:
+  push:
+    branches: [main]
+    paths: ['website/**', '.github/workflows/deploy-public-site.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: deploy-bni-public
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install paramiko
+      - name: Verify document root and publish
+        env:
+          OVH_HOST: ${{ secrets.OVH_HOST }}
+          OVH_USERNAME: ${{ secrets.OVH_USERNAME }}
+          OVH_PASSWORD: ${{ secrets.OVH_PASSWORD }}
+          OVH_PORT: ${{ secrets.OVH_PORT }}
+        run: python website/scripts/deploy.py

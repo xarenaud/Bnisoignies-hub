@@ -446,6 +446,27 @@ def create_app():
     db.init_app(app)
     CORS(app,origins=os.getenv("CORS_ORIGINS",HUB_APP_URL).split(","))
 
+    @app.get("/api/public/website")
+    def public_website():
+        # Explicit public projection: never reuse the authenticated directory payload.
+        today=datetime.now(ZoneInfo("Europe/Brussels")).date()
+        members=[]
+        for member in Member.query.order_by(Member.last_name,Member.first_name).all():
+            membership=active_membership_for(member.id)
+            if not official_member(member):continue
+            if membership.start_date and membership.start_date>today:continue
+            if membership.end_date and membership.end_date<today:continue
+            if member.user_account and member.user_account.status in {"DISABLED","SUSPENDED"}:continue
+            members.append({"firstName":member.first_name,"lastName":member.last_name,"company":member.company or "","activity":member.activity or ""})
+        meetings=[{"date":m.date.isoformat(),"startTime":m.start_time.strftime("%H:%M") if m.start_time else None,"type":m.type,"location":m.location or ""} for m in Meeting.query.filter(Meeting.date>=today,Meeting.date<=today+timedelta(days=180),Meeting.status!="CANCELLED",Meeting.type!="NO_MEETING").order_by(Meeting.date).limit(30).all()]
+        response=jsonify({"members":members,"meetings":meetings,"updatedAt":today.isoformat()})
+        response.headers["Cache-Control"]="public, max-age=300"
+        origin=request.headers.get("Origin")
+        if origin in {"https://www.bim-soignies.be","https://bim-soignies.be"}:
+            response.headers["Access-Control-Allow-Origin"]=origin
+            response.headers["Vary"]="Origin"
+        return response
+
     @app.get("/health")
     def health():
         return {"status":"ok","service":"bni-soignies-api"}
