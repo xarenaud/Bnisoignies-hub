@@ -15,7 +15,7 @@ import time
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlencode
 from zoneinfo import ZoneInfo
 
 from flask import Flask, Response, jsonify, redirect, request, send_from_directory, session
@@ -395,8 +395,7 @@ def export():
     def cell(value):
         text = str(value)
         return "'" + text if text.startswith(('=', '+', '-', '@', '\t', '\r', '\n')) else text
-    with database() as db:
-        rows = db.execute('SELECT * FROM registrations WHERE is_test=0 ORDER BY id').fetchall()
+    rows = organizer_view_rows(organizer_rows())
     for row in rows:
         p = json.loads(row['payload'])
         writer.writerow([cell(x) for x in [row['reference'], row['created_at'], p['firstName'], p['lastName'], p['group'], p.get('email', ''), p.get('phone', ''), 'Oui' if p.get('invoiceRequested') else 'Non', p.get('vatNumber', ''), row['count'], row['total'], ', '.join(g['firstName']+' '+g['lastName'] for g in p['guests']), p.get('paymentAcceptedAt', ''), p.get('paymentTerms', ''), expense_payment_label(row['reference'])]])
@@ -461,32 +460,102 @@ def organizer_rows():
         return db.execute('SELECT r.*,n.paid_at AS payment_received_at,n.mail_status AS expense_mail_status FROM registrations r LEFT JOIN expense_notes n USING(reference) WHERE r.is_test=0 ORDER BY r.id DESC').fetchall()
 
 
+def organizer_table_state():
+    columns = {'reference', 'date', 'payer', 'group', 'email', 'phone', 'places', 'amount', 'guests', 'invoice', 'payment'}
+    column = request.args.get('sort', 'payment')
+    direction = request.args.get('direction', 'asc')
+    payment = request.args.get('payment', 'all')
+    return (column if column in columns else 'payment',
+            direction if direction in {'asc', 'desc'} else 'asc',
+            payment if payment in {'all', 'paid', 'unpaid'} else 'all')
+
+
+def organizer_view_rows(rows):
+    import unicodedata
+    column, direction, payment = organizer_table_state()
+    def text_key(value):
+        value = ''.join(c for c in unicodedata.normalize('NFKD', str(value or '').casefold()) if not unicodedata.combining(c))
+        return tuple((1, int(part)) if part.isdigit() else (0, part) for part in re.split(r'(\d+)', value))
+    def date_key(value):
+        try:
+            date = datetime.fromisoformat(value)
+            if date.tzinfo is None:
+                date = date.replace(tzinfo=ZoneInfo('Europe/Brussels'))
+            return date.timestamp()
+        except (TypeError, ValueError):
+            return float('-inf')
+    def sort_key(row):
+        p = json.loads(row['payload'])
+        keys = {
+            'reference': lambda: text_key(row['reference']),
+            'date': lambda: date_key(row['created_at']),
+            'payer': lambda: (text_key(p.get('lastName')), text_key(p.get('firstName'))),
+            'group': lambda: text_key(p.get('group')),
+            'email': lambda: text_key(p.get('email')),
+            'phone': lambda: re.sub(r'\D', '', p.get('phone', '')),
+            'places': lambda: int(row['count']),
+            'amount': lambda: float(row['total']),
+            'guests': lambda: text_key(', '.join(g['lastName'] + ' ' + g['firstName'] for g in p.get('guests', []))),
+            'invoice': lambda: (bool(p.get('invoiceRequested')), text_key(p.get('vatNumber'))),
+            'payment': lambda: (bool(row['payment_received_at']), date_key(row['payment_received_at'])),
+        }
+        return (keys[column](), text_key(p.get('lastName')), text_key(p.get('firstName')), text_key(row['reference']))
+    selected = [r for r in rows if payment == 'all' or bool(r['payment_received_at']) == (payment == 'paid')]
+    return sorted(selected, key=sort_key, reverse=direction == 'desc')
+
+
+def organizer_table_url(path='/admin/inscriptions', **overrides):
+    column, direction, payment = organizer_table_state()
+    values = dict(sort=column, direction=direction, payment=payment)
+    values.update(overrides)
+    return path + '?' + urlencode(values)
+
+
 @app.get('/admin/inscriptions')
 @admin_required
 def organizer_dashboard():
     from html import escape
-    rows = organizer_rows()
+    all_rows = organizer_rows()
+    rows = organizer_view_rows(all_rows)
+    column, direction, payment = organizer_table_state()
+    paid_count = sum(bool(r['payment_received_at']) for r in all_rows)
     entries = []
     for row in rows:
         p = json.loads(row['payload'])
         guests = ', '.join(g['firstName'] + ' ' + g['lastName'] for g in p['guests']) or '—'
         values = [row['reference'], datetime.fromisoformat(row['created_at']).strftime('%d/%m/%Y %H:%M'), p['firstName'] + ' ' + p['lastName'], p['group'], p.get('email', ''), p.get('phone', ''), row['count'], str(row['total']) + ' €', guests, ('Oui — ' + p.get('vatNumber', '')) if p.get('invoiceRequested') else 'Non']
-        values.append('Payé le ' + row['payment_received_at'] if row['payment_received_at'] else 'À vérifier')
-        action_link = '<td><a href="/admin/inscriptions/' + row['reference'] + '/note">Paiement / note de frais</a></td>'
-        entries.append('<tr>' + ''.join('<td>' + escape(str(v)) + '</td>' for v in values) + action_link + '</tr>')
+        if row['payment_received_at']:
+            paid_date = datetime.fromisoformat(row['payment_received_at']).strftime('%d/%m/%Y')
+            status = '<span class="payment paid">Payé</span><small>Le ' + escape(paid_date) + '</small>'
+        else:
+            status = '<span class="payment unpaid">À payer</span><small>Paiement non validé</small>'
+        action_link = '<td><a href="/admin/inscriptions/' + escape(row['reference'], quote=True) + '/note">Paiement / note de frais</a></td>'
+        entries.append('<tr>' + ''.join('<td>' + escape(str(v)) + '</td>' for v in values) + '<td>' + status + '</td>' + action_link + '</tr>')
     updated = datetime.now(ZoneInfo('Europe/Brussels')).strftime('%d/%m/%Y à %H:%M:%S')
-    headers = ['Référence', 'Inscription', 'Personne qui paie', 'Groupe', 'Email', 'Téléphone', 'Places', 'Montant dû', 'Accompagnants', 'Facture / TVA', 'Paiement', 'Actions']
-    html = '''<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><meta http-equiv="refresh" content="900"><title>Inter BNI — Liste des inscrits</title><link rel="stylesheet" href="/admin/inscriptions.css"></head><body><main><p class="brand">BNI SOIGNIES · ESPACE ORGANISATEUR</p><h1>Liste des inscrits</h1><p>Inter BNI · 26 novembre 2026 · Ford Steveny Soignies</p>'''
-    html += '<section class="stats"><div><strong>' + str(len(rows)) + '</strong> inscriptions</div><div><strong>' + str(sum(r['count'] for r in rows)) + '</strong> places</div><div><strong>' + str(sum(r['total'] for r in rows if not r['payment_received_at'])) + ' €</strong> restant à percevoir</div></section>'
-    html += '<p>Dernière actualisation : ' + updated + ' (heure belge). Actualisation automatique toutes les 15 minutes tant que cette page reste ouverte.</p><nav><a class="button" href="/admin/inscriptions.xlsx">Télécharger Excel (.xlsx)</a><a href="/admin/inscriptions">Actualiser maintenant</a><a href="/admin/inscriptions.csv">Télécharger CSV</a></nav><p class="note">Les montants indiquent les sommes dues. La réception des virements doit être vérifiée séparément. Les anciennes inscriptions conservent leur tarif initial.</p><div class="table"><table><thead><tr>'
-    html += ''.join('<th scope="col">' + h + '</th>' for h in headers) + '</tr></thead><tbody>' + (''.join(entries) or '<tr><td colspan="12">Aucune inscription pour le moment.</td></tr>') + '</tbody></table></div></main></body></html>'
+    headers = [('reference', 'Référence'), ('date', 'Inscription'), ('payer', 'Personne qui paie'), ('group', 'Groupe'), ('email', 'Email'), ('phone', 'Téléphone'), ('places', 'Places'), ('amount', 'Montant dû'), ('guests', 'Accompagnants'), ('invoice', 'Facture / TVA'), ('payment', 'Paiement')]
+    html = """<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><meta http-equiv="refresh" content="900"><title>Inter BNI — Liste des inscrits</title><link rel="stylesheet" href="/admin/inscriptions.css"></head><body><main><p class="brand">BNI SOIGNIES · ESPACE ORGANISATEUR</p><h1>Liste des inscrits</h1><p>Inter BNI · 26 novembre 2026 · Ford Steveny Soignies</p>"""
+    html += '<section class="stats"><div><strong>' + str(len(all_rows)) + '</strong> inscriptions</div><div><strong>' + str(sum(r['count'] for r in all_rows)) + '</strong> places</div><div><strong>' + str(sum(r['total'] for r in all_rows if r['payment_received_at'])) + ' €</strong> paiements validés</div><div><strong>' + str(sum(r['total'] for r in all_rows if not r['payment_received_at'])) + ' €</strong> restant à percevoir</div></section>'
+    html += '<p>Dernière actualisation : ' + updated + ' (heure belge). Actualisation automatique toutes les 15 minutes ; le tri et le filtre sont conservés.</p><nav><a class="button" href="' + escape(organizer_table_url('/admin/inscriptions.xlsx'), quote=True) + '">Télécharger Excel (.xlsx)</a><a href="' + escape(organizer_table_url(), quote=True) + '">Actualiser maintenant</a><a href="' + escape(organizer_table_url('/admin/inscriptions.csv'), quote=True) + '">Télécharger CSV</a></nav>'
+    html += '<nav class="payment-filters" aria-label="Filtrer les inscriptions par paiement">'
+    for value, label, count in [('all', 'Tous', len(all_rows)), ('unpaid', 'À payer', len(all_rows) - paid_count), ('paid', 'Payés', paid_count)]:
+        active = ' aria-current="page"' if payment == value else ''
+        html += '<a' + active + ' href="' + escape(organizer_table_url(payment=value), quote=True) + '">' + label + ' (' + str(count) + ')</a>'
+    html += '</nav><p>' + str(len(rows)) + ' inscription(s) affichée(s) · ' + str(sum(r['count'] for r in rows)) + ' place(s) · ' + str(sum(r['total'] for r in rows if not r['payment_received_at'])) + ' € à percevoir dans cette sélection.</p>'
+    html += '<p class="note">Cliquez sur un titre de colonne pour trier, puis une seconde fois pour inverser le tri. Les noms sont triés par nom de famille, les dates chronologiquement et les places et montants par valeur. Par défaut, les paiements non validés apparaissent en premier. Les exports suivent le tri et le filtre sélectionnés.</p><p class="note">Le statut « À payer » signifie que le paiement n’a pas encore été validé dans cet outil. Vérifiez la réception du virement avant de valider le paiement via « Paiement / note de frais ».</p><div class="table"><table><thead><tr>'
+    for key, label in headers:
+        selected = key == column
+        next_direction = 'desc' if selected and direction == 'asc' else 'asc'
+        aria = (' aria-sort="' + ('ascending' if direction == 'asc' else 'descending') + '"') if selected else ''
+        arrow = (' ↑' if direction == 'asc' else ' ↓') if selected else ' ↕'
+        html += '<th scope="col"' + aria + '><a href="' + escape(organizer_table_url(sort=key, direction=next_direction), quote=True) + '">' + label + '<span aria-hidden="true">' + arrow + '</span></a></th>'
+    html += '<th scope="col">Actions</th></tr></thead><tbody>' + (''.join(entries) or '<tr><td colspan="12">Aucune inscription ne correspond à ce filtre.</td></tr>') + '</tbody></table></div></main></body></html>'
     return Response(html, mimetype='text/html', headers={'X-Robots-Tag': 'noindex, nofollow'})
 
 
 @app.get('/admin/inscriptions.css')
 @admin_required
 def organizer_css():
-    return Response('''*{box-sizing:border-box}body{margin:0;background:#101722;color:#e9edf3;font:15px/1.6 Arial,sans-serif}main{max-width:1600px;margin:auto;padding:40px 24px}.brand{color:#ff879b;font-weight:bold;letter-spacing:2px}h1{font-size:38px;margin:16px 0 8px}.stats{display:flex;flex-wrap:wrap;gap:16px;margin:28px 0}.stats div{background:#202b3b;border-top:3px solid #cf2030;padding:18px 26px;min-width:180px}.stats strong{display:block;font-size:32px}nav{display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin:24px 0}a{color:#ffadb9}.button{background:#cf2030;color:white;padding:12px 20px;text-decoration:none;font-weight:bold}.note{color:#bdc8d8;max-width:900px}.table{overflow-x:auto;background:#192332;border:1px solid #344154}table{border-collapse:collapse;width:100%;font-size:14px}th,td{text-align:left;padding:13px 16px;border-bottom:1px solid #344154;vertical-align:top}th{background:#263348;white-space:nowrap}td{overflow-wrap:anywhere;min-width:110px}tr:nth-child(even){background:#1e2b3e}@media(max-width:600px){main{padding:24px 14px}h1{font-size:30px}.stats div{flex:1;min-width:140px}}''', mimetype='text/css')
+    return Response('''*{box-sizing:border-box}body{margin:0;background:#101722;color:#e9edf3;font:15px/1.6 Arial,sans-serif}main{max-width:1600px;margin:auto;padding:40px 24px}.brand{color:#ff879b;font-weight:bold;letter-spacing:2px}h1{font-size:38px;margin:16px 0 8px}.stats{display:flex;flex-wrap:wrap;gap:16px;margin:28px 0}.stats div{background:#202b3b;border-top:3px solid #cf2030;padding:18px 26px;min-width:180px}.stats strong{display:block;font-size:32px}nav{display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin:24px 0}a{color:#ffadb9}.button{background:#cf2030;color:white;padding:12px 20px;text-decoration:none;font-weight:bold}.note{color:#bdc8d8;max-width:900px}.table{overflow-x:auto;background:#192332;border:1px solid #344154}table{border-collapse:collapse;width:100%;font-size:14px}th,td{text-align:left;padding:13px 16px;border-bottom:1px solid #344154;vertical-align:top}th{background:#263348;white-space:nowrap}td{overflow-wrap:anywhere;min-width:110px}tr:nth-child(even){background:#1e2b3e}th a{display:block;color:#fff;text-decoration:none;padding:4px 0}th a:hover,th a:focus-visible{text-decoration:underline;color:#ffadb9}th[aria-sort]{background:#3b354b}a:focus-visible{outline:3px solid #ffadb9;outline-offset:4px}.payment-filters{gap:10px}.payment-filters a{padding:9px 16px;border:1px solid #53647b;border-radius:6px;text-decoration:none}.payment-filters a[aria-current]{background:#cf2030;border-color:#cf2030;color:#fff;font-weight:bold}.payment{display:inline-block;padding:4px 10px;border-radius:20px;white-space:nowrap;font-weight:bold}.paid{background:#143f33;color:#a7f3ce}.unpaid{background:#5b2330;color:#ffd2d9}td small{display:block;margin-top:5px;color:#bdc8d8;white-space:nowrap}@media(max-width:600px){main{padding:24px 14px}h1{font-size:30px}.stats div{flex:1;min-width:140px}}''', mimetype='text/css')
 
 
 @app.get('/admin/inscriptions.xlsx')
@@ -494,7 +563,7 @@ def organizer_css():
 def organizer_excel():
     import zipfile
     from xml.sax.saxutils import escape
-    rows = organizer_rows()
+    rows = organizer_view_rows(organizer_rows())
     data = [['Référence', 'Date', 'Prénom payeur', 'Nom payeur', 'Groupe', 'Email', 'Téléphone', 'Places', 'Total EUR', 'Accompagnants', 'Facture / note de frais', 'TVA', 'Paiement', 'Engagement accepté le']]
     for row in rows:
         p = json.loads(row['payload'])
@@ -714,5 +783,6 @@ def expense_payment_label(ref):
 
 from expense_notes import install as install_expense_notes
 expense_service = install_expense_notes(app, database, admin_required, same_origin, send_notification, ADMIN_PASSWORD, NOTIFICATIONS_ENABLED)
+
 
 
