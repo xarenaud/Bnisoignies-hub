@@ -28,7 +28,7 @@ try:
         if response.read().decode()!=token:raise RuntimeError('Document root verification failed; no site files changed.')
 finally:delete(marker)
 # Deliberately no mirror/delete: preserve every unrelated application and file.
-for name in ['logo.svg','index.html']:put(name,Path('website',name).read_bytes())
+for name in ['logo.svg','vitralux.html','index.html']:put(name,Path('website',name).read_bytes())
 ftp.close()
 with urllib.request.urlopen('https://www.bim-soignies.be/?release='+token,timeout=30) as response:
     html=response.read().decode()

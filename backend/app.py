@@ -7,7 +7,7 @@ SESSION_DAYS=90
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 from flask import Flask, jsonify, request, send_file
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import text
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -473,6 +473,53 @@ def create_app():
             response.headers["Access-Control-Allow-Origin"]=origin
             response.headers["Vary"]="Origin"
         return response
+
+    visit_mail_limits={}
+    visit_ip_limits={}
+    from threading import Lock
+    visit_mail_lock=Lock()
+
+    @app.post("/api/public/vitralux-registration")
+    @cross_origin(origins=["https://www.bim-soignies.be","https://bim-soignies.be"],methods=["POST","OPTIONS"])
+    def vitralux_registration():
+        import re, hashlib, time as clock
+        if request.headers.get("Origin") not in {"https://www.bim-soignies.be","https://bim-soignies.be"}:
+            return {"error":"Veuillez utiliser le formulaire du site BNI Soignies."},403
+        if request.content_length and request.content_length>12000:return {"error":"Formulaire trop volumineux."},413
+        data=request.get_json(silent=True)
+        if not isinstance(data,dict):return {"error":"Formulaire invalide."},400
+        if data.get("website"):return {"error":"Formulaire invalide."},400
+        if data.get("consent") is not True:return {"error":"Veuillez autoriser la transmission de votre demande au groupe."},400
+        fields={key:str(data.get(key,"")).strip() for key in ["firstName","lastName","company","activity","email","phone","message"]}
+        if any(len(value)>limit for key,value in fields.items() for limit in [1500 if key=="message" else 180]):return {"error":"Un champ dépasse la longueur autorisée."},400
+        if any(not fields[key] for key in ["firstName","lastName","email"]):return {"error":"Indiquez vos prénom, nom et e-mail."},400
+        if not re.fullmatch(r"[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+",fields["email"]) or any(c in fields["email"] for c in "\r\n"):
+            return {"error":"Adresse e-mail invalide."},400
+        if datetime.now(ZoneInfo("Europe/Brussels")).date()>date(2026,11,19):return {"error":"Les inscriptions pour cette rencontre sont clôturées."},410
+        # Bounded, short-lived anti-repeat guard; recipient is fixed server-side.
+        key=hashlib.sha256((fields["email"].casefold()+"|"+(request.remote_addr or "")).encode()).hexdigest()
+        now=clock.monotonic()
+        ip_key=hashlib.sha256((request.remote_addr or "unknown").encode()).hexdigest()
+        with visit_mail_lock:
+            for old in list(visit_ip_limits):
+                visit_ip_limits[old]=[stamp for stamp in visit_ip_limits[old] if now-stamp<600]
+                if not visit_ip_limits[old]:visit_ip_limits.pop(old,None)
+            if len(visit_ip_limits.get(ip_key,[]))>=5:return {"error":"Trop de demandes rapprochées. Réessayez dans quelques minutes."},429
+            visit_ip_limits.setdefault(ip_key,[]).append(now)
+            for old in list(visit_mail_limits):
+                if now-visit_mail_limits[old]>600:visit_mail_limits.pop(old,None)
+            if key in visit_mail_limits and now-visit_mail_limits[key]<60:return {"error":"Une demande vient déjà d’être envoyée. Patientez une minute avant de réessayer."},429
+            if len(visit_mail_limits)>2000:return {"error":"Le service est temporairement occupé. Réessayez dans quelques minutes."},503
+            visit_mail_limits[key]=now
+        body="Demande d’inscription — Petit déjeuner BNI chez Vitralux\n19 novembre 2026, de 7h à 9h\nRue Grande 4, 7020 Maisières\n\n"+"\n".join(label+": "+(fields[field] or "Non renseigné") for field,label in [("firstName","Prénom"),("lastName","Nom"),("company","Entreprise"),("activity","Activité"),("email","E-mail"),("phone","Téléphone"),("message","Message")])+"\n\nLe visiteur a autorisé la transmission de sa demande à hub@bim-soignies.be.\nMerci de lui confirmer les modalités de sa visite."
+        try:sent=send_simple_email("hub@bim-soignies.be","Inscription Vitralux — 19/11/2026",body)
+        except Exception:
+            app.logger.warning("Vitralux registration mail unavailable")
+            sent=False
+        if not sent:
+            with visit_mail_lock:visit_mail_limits.pop(key,None)
+            return {"error":"L’envoi n’a pas abouti. Réessayez ou contactez hub@bim-soignies.be. Votre inscription n’est pas confirmée."},503
+        return {"status":"sent","message":"Votre demande a été envoyée à BNI Soignies BIM. Le groupe vous confirmera votre visite."},201
 
     @app.get("/health")
     def health():
