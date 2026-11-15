@@ -484,7 +484,7 @@ def create_app():
             shared_days.add(event_day)
             title=event.title or "Événement du groupe"
             # Public projection excludes contacts, routing, attachments and internal identifiers.
-            url="vitralux.html" if "vitralux" in title.casefold() else ("https://event.bim-soignies.be" if "inter-bni" in title.casefold() and "2026-11-26"==event.event_date.isoformat() else None)
+            url="vitralux.html" if "vitralux" in title.casefold() else ("https://event.bim-soignies.be" if "https://event.bim-soignies.be" in (event.message or "") or ("inter-bni" in title.casefold() and "2026-11-26"==event.event_date.isoformat()) else None)
             events.append({"title":title,"description":event.message or "","date":event_day.isoformat(),"startTime":event_time,"location":event_location or "","url":url})
         for meeting in Meeting.query.filter(Meeting.type.in_(["SPECIAL","EXTERNAL","HOSTED","JOINT"]),Meeting.status!="CANCELLED").order_by(Meeting.date).all():
             if meeting.date in shared_days:continue
@@ -3717,6 +3717,15 @@ Cette demande est également disponible dans HUB Soignies.""")
                         if meeting and meeting.type=="REGULAR" and not meeting.location:
                             meeting.type=kind;meeting.location=location
                         if meeting and not db.session.get(PublicEventMeetingLink,existing.id):db.session.add(PublicEventMeetingLink(event_id=existing.id,meeting_id=meeting.id))
+                db.session.commit()
+                repaired=db.session.execute(text("INSERT INTO public_site_migrations(key) VALUES ('deduplicate_interbni_import_20261115') ON CONFLICT DO NOTHING RETURNING key")).first()
+                if repaired:
+                    seed=MemberRequest.query.filter_by(type="EVENT",title="Inter-BNI — La région a rendez-vous.",event_date=date(2026,11,26),member_id=owner.id).first()
+                    original=MemberRequest.query.filter(MemberRequest.type=="EVENT",MemberRequest.event_date==date(2026,11,26),MemberRequest.title!="Inter-BNI — La région a rendez-vous.",MemberRequest.message.contains("https://event.bim-soignies.be"),MemberRequest.status!="CANCELLED").order_by(MemberRequest.id).first()
+                    if seed and original:
+                        link=db.session.get(PublicEventMeetingLink,seed.id)
+                        if link and not db.session.get(PublicEventMeetingLink,original.id):db.session.add(PublicEventMeetingLink(event_id=original.id,meeting_id=link.meeting_id))
+                        seed.status="CANCELLED"
                 db.session.commit()
         if db.engine.dialect.name=="postgresql":
             db.session.execute(text("ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS support_actor_id INTEGER"))
