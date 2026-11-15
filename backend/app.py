@@ -281,6 +281,11 @@ class MemberRequest(db.Model):
     status=db.Column(db.String(30),nullable=False,default="TO_PROCESS")
     created_at=db.Column(db.DateTime,default=datetime.utcnow,nullable=False)
 
+class PublicEventMeetingLink(db.Model):
+    __tablename__="public_event_meeting_links"
+    event_id=db.Column(db.Integer,primary_key=True)
+    meeting_id=db.Column(db.Integer,nullable=False,index=True)
+
 class SwapRequest(db.Model):
     __tablename__="swap_requests"
     id=db.Column(db.Integer,primary_key=True)
@@ -466,8 +471,28 @@ def create_app():
                 unique[key]["activity"]=" · ".join(filter(None,[unique[key]["activity"],item["activity"]]))
         members=list(unique.values())
         meetings=[{"date":m.date.isoformat(),"startTime":m.start_time.strftime("%H:%M") if m.start_time else None,"type":m.type,"location":m.location or ""} for m in Meeting.query.filter(Meeting.date>=today,Meeting.date<=today+timedelta(days=180),Meeting.status!="CANCELLED",Meeting.type!="NO_MEETING").order_by(Meeting.date).limit(30).all()]
-        response=jsonify({"members":members,"meetings":meetings,"updatedAt":today.isoformat()})
-        response.headers["Cache-Control"]="public, max-age=300"
+        shared=MemberRequest.query.filter(MemberRequest.type=="EVENT",MemberRequest.event_date.isnot(None),MemberRequest.status!="CANCELLED").order_by(MemberRequest.event_date,MemberRequest.id).all()
+        events=[]
+        shared_days=set()
+        links={x.event_id:x.meeting_id for x in PublicEventMeetingLink.query.all()}
+        for event in shared:
+            linked=db.session.get(Meeting,links[event.id]) if event.id in links else None
+            if event.id in links and (not linked or linked.status=="CANCELLED" or linked.type=="NO_MEETING"):continue
+            event_day=linked.date if linked else event.event_date
+            event_time=linked.start_time.strftime("%H:%M") if linked and linked.start_time else event.event_time
+            event_location=linked.location if linked else event.event_location
+            shared_days.add(event_day)
+            title=event.title or "Événement du groupe"
+            # Public projection excludes contacts, routing, attachments and internal identifiers.
+            url="vitralux.html" if "vitralux" in title.casefold() else ("https://event.bim-soignies.be" if "inter-bni" in title.casefold() and "2026-11-26"==event.event_date.isoformat() else None)
+            events.append({"title":title,"description":event.message or "","date":event_day.isoformat(),"startTime":event_time,"location":event_location or "","url":url})
+        for meeting in Meeting.query.filter(Meeting.type.in_(["SPECIAL","EXTERNAL","HOSTED","JOINT"]),Meeting.status!="CANCELLED").order_by(Meeting.date).all():
+            if meeting.date in shared_days:continue
+            title={"HOSTED":"Visite d’entreprise","EXTERNAL":"Réunion extérieure","JOINT":"Rencontre intergroupes","SPECIAL":"Réunion spéciale"}[meeting.type]
+            events.append({"title":title,"description":"","date":meeting.date.isoformat(),"startTime":meeting.start_time.strftime("%H:%M") if meeting.start_time else None,"location":meeting.location or "","url":None})
+        events.sort(key=lambda x:(x["date"],x.get("startTime") or "",x["title"]))
+        response=jsonify({"members":members,"meetings":meetings,"events":[x for x in events if x["date"]>=today.isoformat()],"pastEvents":sorted([x for x in events if x["date"]<today.isoformat()],key=lambda x:x["date"],reverse=True),"updatedAt":today.isoformat()})
+        response.headers["Cache-Control"]="no-store"
         origin=request.headers.get("Origin")
         if origin in {"https://www.bim-soignies.be","https://bim-soignies.be"}:
             response.headers["Access-Control-Allow-Origin"]=origin
@@ -3676,6 +3701,23 @@ Cette demande est également disponible dans HUB Soignies.""")
 
     with app.app_context():
         db.create_all()
+        if db.engine.dialect.name=="postgresql":
+            db.session.execute(text("CREATE TABLE IF NOT EXISTS public_site_migrations (key VARCHAR(100) PRIMARY KEY)"))
+            owner=Member.query.filter(db.func.lower(Member.first_name)=="xavier",db.func.lower(Member.last_name)=="renaud").order_by(Member.id).first()
+            if owner:
+                claimed=db.session.execute(text("INSERT INTO public_site_migrations(key) VALUES ('import_public_events_20261115') ON CONFLICT DO NOTHING RETURNING key")).first()
+                if claimed:
+                    initial=[(date(2026,11,19),"Petit déjeuner chez Vitralux","Damien Sitko accueille le groupe à Maisières pour présenter ses activités de pergolas, vérandas et châssis. Une rencontre particulièrement destinée aux architectes de la région.","Vitralux · Rue Grande 4, 7020 Maisières","HOSTED"),(date(2026,11,26),"Inter-BNI — La région a rendez-vous.","Une matinée inter-BNI chez Ford Steveny Soignies pour rencontrer les entrepreneurs de la région et échanger sur la mobilité en 2027.","Ford Steveny · Chaussée de Mons 71, 7060 Soignies","JOINT")]
+                    for day,title,description,location,kind in initial:
+                        existing=MemberRequest.query.filter_by(type="EVENT",event_date=day).filter(db.func.lower(MemberRequest.title).like("%vitralux%" if day.day==19 else "%inter%bni%")).first()
+                        if not existing:
+                            existing=MemberRequest(member_id=owner.id,type="EVENT",title=title,message=description,event_date=day,event_time="07:00",event_location=location,status="COMPLETED")
+                            db.session.add(existing);db.session.flush()
+                        meeting=Meeting.query.filter_by(date=day).first()
+                        if meeting and meeting.type=="REGULAR" and not meeting.location:
+                            meeting.type=kind;meeting.location=location
+                        if meeting and not db.session.get(PublicEventMeetingLink,existing.id):db.session.add(PublicEventMeetingLink(event_id=existing.id,meeting_id=meeting.id))
+                db.session.commit()
         if db.engine.dialect.name=="postgresql":
             db.session.execute(text("ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS support_actor_id INTEGER"))
             db.session.execute(text("ALTER TABLE auth_sessions ADD COLUMN IF NOT EXISTS support_parent_id INTEGER"))
