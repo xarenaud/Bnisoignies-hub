@@ -745,6 +745,8 @@ def deliver_campaign():
     now = time.time()
     with database() as db:
         db.execute('BEGIN IMMEDIATE')
+        if globals().get('reminder17_service'):
+            reminder17_service['exclude'](db)
         exclude_registered_campaign_recipients(db)
         # Do not silently resend after ambiguous delivery or a process restart.
         db.execute("UPDATE invitation_campaign_recipients SET status='unknown',error='DeliveryInterrupted' WHERE status='sending' AND claimed_at < ?", (now-300,))
@@ -764,6 +766,8 @@ def deliver_campaign():
     if row['id'] == 'inter-bni-20261112-0815':
         message.set_content((Path(app.static_folder) / 'mailing-inter-bni-rappel-20261112.txt').read_text())
     message.add_alternative(row['html'], subtype='html')
+    if row['id'] == 'inter-bni-20261117-0800':
+        message = reminder17_service['message'](row)
     try:
         send_notification(message)
     except Exception as error:
@@ -786,3 +790,6 @@ expense_service = install_expense_notes(app, database, admin_required, same_orig
 
 
 
+
+from reminder17 import install as install_reminder17
+reminder17_service = install_reminder17(app, database, admin_required, same_origin, RATE_SECRET, exclude_registered_campaign_recipients)
