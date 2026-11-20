@@ -66,8 +66,8 @@ def install(app, database, admin_required, same_origin, rate_secret, exclude_reg
     def exclude(db):
         return db.execute("""UPDATE invitation_campaign_recipients
             SET status='excluded_unsubscribed',error='OptOut'
-            WHERE campaign_id=? AND status IN ('pending','excluded_registered')
-            AND lower(trim(email)) IN (SELECT email FROM invitation_opt_outs)""", (CAMPAIGN,)).rowcount
+            WHERE status IN ('pending','excluded_registered')
+            AND lower(trim(email)) IN (SELECT email FROM invitation_opt_outs)""").rowcount
 
     def token_for(email):
         return hmac.new(rate_secret.encode(), ('invitation-opt-out:' + email).encode(), hashlib.sha256).hexdigest()
@@ -88,7 +88,7 @@ def install(app, database, admin_required, same_origin, rate_secret, exclude_reg
         mail['To'] = row['email']
         mail['Reply-To'] = 'event@bim-soignies.be'
         mail['Date'] = formatdate(localtime=False)
-        mail['Message-ID'] = '<' + CAMPAIGN + '.' + hashlib.sha256(email.encode()).hexdigest()[:20] + '@event.bim-soignies.be>'
+        mail['Message-ID'] = '<' + (row['id'] if 'id' in row.keys() else CAMPAIGN) + '.' + hashlib.sha256(email.encode()).hexdigest()[:20] + '@event.bim-soignies.be>'
         mail['List-Unsubscribe'] = '<' + withdrawal_url + '>'
         mail.set_content(parser.text())
         mail.add_alternative(html, subtype='html')

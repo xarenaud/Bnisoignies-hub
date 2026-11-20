@@ -1,3 +1,5 @@
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import ast
 import json
 import sqlite3
@@ -81,3 +83,47 @@ class Reminder17Tests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class Reminder21Tests(unittest.TestCase):
+    def test_schedule_and_single_test_copy(self):
+        import reminder21
+        with tempfile.TemporaryDirectory() as root:
+            path=Path(root)/'db'
+            def database():
+                db=sqlite3.connect(path);db.row_factory=sqlite3.Row;return db
+            with database() as db:
+                db.executescript("""CREATE TABLE registrations(payload TEXT,count INTEGER,is_test INTEGER);
+                CREATE TABLE invitation_campaigns(id TEXT PRIMARY KEY,due REAL,subject TEXT,html TEXT,created_at TEXT);
+                CREATE TABLE invitation_campaign_recipients(campaign_id TEXT,email TEXT,status TEXT DEFAULT 'pending',claimed_at REAL,sent_at TEXT,error TEXT,PRIMARY KEY(campaign_id,email));""")
+                db.executemany('INSERT INTO invitation_campaign_recipients(campaign_id,email,status) VALUES(?,?,?)',[(reminder17.SOURCE,e,'accepted_by_smtp') for e in ['xavier@cx-com.be']+['u%d@example.com'%i for i in range(1,315)]])
+                db.executemany('INSERT INTO registrations VALUES(?,?,?)',[(json.dumps({'email':'xavier@cx-com.be'}),1,0),(json.dumps({'email':'u1@example.com'}),2,0),(json.dumps({'email':'u2@example.com'}),20,1)])
+            source=ast.parse((Path(__file__).parent/'app.py').read_text())
+            fn=next(n for n in source.body if isinstance(n,ast.FunctionDef) and n.name=='exclude_registered_campaign_recipients')
+            ns={'time':reminder17.time};exec(compile(ast.Module(body=[fn],type_ignores=[]),'filter','exec'),ns)
+            exclude=ns['exclude_registered_campaign_recipients']
+            app=Flask('21',static_folder=str(Path(__file__).parent/'static'))
+            service=reminder17.install(app,database,lambda f:f,lambda:True,'test-secret',exclude)
+            with database() as db:db.execute('INSERT INTO invitation_opt_outs VALUES(?,?,?)',('u3@example.com','now','test'))
+            def summary(cid):
+                with database() as db:
+                    row=db.execute('SELECT * FROM invitation_campaigns WHERE id=?',(cid,)).fetchone()
+                    return dict(id=cid,due=row['due']) if row else None
+            sent=[]
+            reminder21.install(app,database,lambda f:f,lambda:True,exclude,service,summary,sent.append)
+            client=app.test_client()
+            with patch('reminder21.time.time',return_value=reminder21.DUE-600):
+                self.assertEqual(client.post('/api/admin/invitation-reminder-20261121').status_code,200)
+                self.assertEqual(client.post('/api/admin/invitation-reminder-20261121').status_code,200)
+            with database() as db:
+                counts=dict(db.execute('SELECT status,COUNT(*) FROM invitation_campaign_recipients WHERE campaign_id=? GROUP BY status',(reminder21.CAMPAIGN,)).fetchall())
+                self.assertEqual(counts,dict(pending=313,excluded_registered=1,excluded_unsubscribed=1))
+                row=dict(db.execute('SELECT * FROM invitation_campaigns WHERE id=?',(reminder21.CAMPAIGN,)).fetchone());row['email']='u2@example.com'
+                self.assertEqual(row['due'],datetime(2026,11,21,17,tzinfo=ZoneInfo('Europe/Brussels')).timestamp())
+            mail=service['message'](row)
+            self.assertIn(reminder21.CAMPAIGN,str(mail['Message-ID']))
+            self.assertIn('3 inscrits',mail.get_body(preferencelist=('html',)).get_content())
+            self.assertIn('mardi 24 novembre',mail.get_body(preferencelist=('html',)).get_content())
+            for _ in range(2):
+                self.assertEqual(client.post('/api/admin/invitation-reminder-20261121/test').json['status'],'accepted_by_smtp')
+            self.assertEqual(len(sent),1)
+            self.assertEqual(sent[0]['To'],'xavier@cx-com.be')
