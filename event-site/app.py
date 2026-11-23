@@ -601,7 +601,7 @@ def invitation_test():
     data = request.get_json(silent=True) or {}
     request_id = data.get('requestId') if isinstance(data, dict) else None
     template = data.get('template', 'invitation') if isinstance(data, dict) else None
-    if template not in {'invitation', 'rappel-20261112'}:
+    if template not in {'invitation', 'rappel-20261112', 'arrivee-20261126'}:
         return jsonify(error='Modèle invalide.'), 422
     reminder = template == 'rappel-20261112'
     if not isinstance(request_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{12,80}', request_id):
@@ -625,6 +625,24 @@ def invitation_test():
         message.set_content((Path(app.static_folder) / 'mailing-inter-bni-rappel-20261112.txt').read_text())
     html_name = 'mailing-inter-bni-rappel-20261112.html' if reminder else 'mailing-inter-bni.html'
     message.add_alternative((Path(app.static_folder) / html_name).read_text(), subtype='html')
+    if template == 'arrivee-20261126':
+        from reminder17 import PlainMail
+        html = (Path(app.static_folder) / 'mailing-inter-bni-arrivee.html').read_text()
+        parser = PlainMail()
+        parser.feed(html)
+        message = EmailMessage()
+        message['Subject'] = '[VÉRIFICATION] Inter-BNI du 26 novembre : parking, arrivée et programme'
+        message['From'] = 'hub@bim-soignies.be'
+        message['To'] = recipient
+        message['Reply-To'] = 'event@bim-soignies.be'
+        message['Message-ID'] = '<' + request_id + '@event.bim-soignies.be>'
+        message['Date'] = formatdate(localtime=False)
+        message.set_content(parser.text())
+        message.add_alternative(html, subtype='html')
+        message.get_payload()[-1].add_related(
+            (Path(app.static_folder) / 'plan-acces-inter-bni.png').read_bytes(),
+            maintype='image', subtype='png', cid='<plan-acces-inter-bni>',
+            filename='Plan-acces-Inter-BNI-26-novembre.png', disposition='inline')
     try:
         send_notification(message)
     except Exception as error:
