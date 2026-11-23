@@ -831,3 +831,6 @@ def organizer_participants():
         for guest in p.get('guests',[]):
             participants.append(dict(common,firstName=guest.get('firstName',''),lastName=guest.get('lastName',''),email=guest.get('email',''),phone=guest.get('phone',''),group=guest.get('group',''),kind='accompagnant'))
     return jsonify(extractedAt=datetime.now(ZoneInfo('Europe/Brussels')).isoformat(),registrations=len(registrations),reservedPlaces=sum(r['count'] for r in registrations),participants=participants)
+
+from arrival_review_v2 import install as install_arrival_review_v2
+install_arrival_review_v2(app, database, send_notification)
