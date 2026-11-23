@@ -817,3 +817,17 @@ install_reminder21(app, database, admin_required, same_origin, exclude_registere
 
 from reminder23 import install as install_reminder23
 install_reminder23(app, database, admin_required, same_origin, exclude_registered_campaign_recipients, reminder17_service, campaign_summary, send_notification)
+
+@app.get('/api/admin/participants')
+@admin_required
+def organizer_participants():
+    participants=[]
+    with database() as db:
+        registrations=db.execute('SELECT reference,created_at,count,payload FROM registrations WHERE is_test=0 ORDER BY id').fetchall()
+    for row in registrations:
+        p=json.loads(row['payload'])
+        common=dict(reference=row['reference'],registrationDate=row['created_at'],registrationGroup=p.get('group',''),bookingFirstName=p.get('firstName',''),bookingLastName=p.get('lastName',''))
+        participants.append(dict(common,firstName=p.get('firstName',''),lastName=p.get('lastName',''),email=p.get('email',''),phone=p.get('phone',''),group=p.get('group',''),kind='principal'))
+        for guest in p.get('guests',[]):
+            participants.append(dict(common,firstName=guest.get('firstName',''),lastName=guest.get('lastName',''),email=guest.get('email',''),phone=guest.get('phone',''),group=guest.get('group',''),kind='accompagnant'))
+    return jsonify(extractedAt=datetime.now(ZoneInfo('Europe/Brussels')).isoformat(),registrations=len(registrations),reservedPlaces=sum(r['count'] for r in registrations),participants=participants)
