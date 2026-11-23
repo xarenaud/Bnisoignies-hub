@@ -766,7 +766,7 @@ def deliver_campaign():
     if row['id'] == 'inter-bni-20261112-0815':
         message.set_content((Path(app.static_folder) / 'mailing-inter-bni-rappel-20261112.txt').read_text())
     message.add_alternative(row['html'], subtype='html')
-    if row['id'] in {'inter-bni-20261117-0800','inter-bni-20261121-1700'}:
+    if row['id'] in {'inter-bni-20261117-0800','inter-bni-20261121-1700','inter-bni-20261123-1630'}:
         message = reminder17_service['message'](row)
     try:
         send_notification(message)
@@ -796,3 +796,6 @@ reminder17_service = install_reminder17(app, database, admin_required, same_orig
 
 from reminder21 import install as install_reminder21
 install_reminder21(app, database, admin_required, same_origin, exclude_registered_campaign_recipients, reminder17_service, campaign_summary, send_notification)
+
+from reminder23 import install as install_reminder23
+install_reminder23(app, database, admin_required, same_origin, exclude_registered_campaign_recipients, reminder17_service, campaign_summary, send_notification)
