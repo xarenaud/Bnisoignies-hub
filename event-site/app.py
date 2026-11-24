@@ -563,8 +563,10 @@ def organizer_dashboard():
     updated = datetime.now(ZoneInfo('Europe/Brussels')).strftime('%d/%m/%Y à %H:%M:%S')
     headers = [('reference', 'Référence'), ('date', 'Inscription'), ('payer', 'Personne qui paie'), ('group', 'Groupe'), ('email', 'Email'), ('phone', 'Téléphone'), ('places', 'Places'), ('amount', 'Montant dû'), ('guests', 'Accompagnants'), ('invoice', 'Facture / TVA'), ('payment', 'Paiement')]
     html = """<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><meta http-equiv="refresh" content="900"><title>Inter BNI — Liste des inscrits</title><link rel="stylesheet" href="/admin/inscriptions.css"></head><body><main><p class="brand">BNI SOIGNIES · ESPACE ORGANISATEUR</p><h1>Liste des inscrits</h1><p>Inter BNI · 26 novembre 2026 · Ford Steveny Soignies</p>"""
+    if re.fullmatch(r'BNI-[A-F0-9]{10}',request.args.get('added','')):
+        html += '<p role="status">Inscription '+escape(request.args['added'])+' ajoutée.</p>'
     html += '<section class="stats"><div><strong>' + str(len(all_rows)) + '</strong> inscriptions</div><div><strong>' + str(sum(r['count'] for r in all_rows)) + '</strong> places</div><div><strong>' + str(sum(r['total'] for r in all_rows if r['payment_received_at'])) + ' €</strong> paiements validés</div><div><strong>' + str(sum(r['total'] for r in all_rows if not r['payment_received_at'])) + ' €</strong> restant à percevoir</div></section>'
-    html += '<p>Dernière actualisation : ' + updated + ' (heure belge). Actualisation automatique toutes les 15 minutes ; le tri et le filtre sont conservés.</p><nav><a class="button" href="' + escape(organizer_table_url('/admin/inscriptions.xlsx'), quote=True) + '">Télécharger Excel (.xlsx)</a><a href="' + escape(organizer_table_url(), quote=True) + '">Actualiser maintenant</a><a href="' + escape(organizer_table_url('/admin/inscriptions.csv'), quote=True) + '">Télécharger CSV</a></nav>'
+    html += '<p>Dernière actualisation : ' + updated + ' (heure belge). Actualisation automatique toutes les 15 minutes ; le tri et le filtre sont conservés.</p><nav><a class="button" href="/admin/inscriptions/nouvelle">Ajouter une inscription</a><a class="button" href="' + escape(organizer_table_url('/admin/inscriptions.xlsx'), quote=True) + '">Télécharger Excel (.xlsx)</a><a href="' + escape(organizer_table_url(), quote=True) + '">Actualiser maintenant</a><a href="' + escape(organizer_table_url('/admin/inscriptions.csv'), quote=True) + '">Télécharger CSV</a></nav>'
     html += '<nav class="payment-filters" aria-label="Filtrer les inscriptions par paiement">'
     for value, label, count in [('all', 'Tous', len(all_rows)), ('unpaid', 'À payer', len(all_rows) - paid_count), ('paid', 'Payés', paid_count)]:
         active = ' aria-current="page"' if payment == value else ''
@@ -866,3 +868,6 @@ install_arrival_review_v2(app, database, send_notification)
 
 from attendee_information24 import install as install_attendee_information24
 attendee_information24_service=install_attendee_information24(app,database,admin_required,send_notification)
+
+from manual_registration import install as install_manual_registration
+install_manual_registration(app,database,admin_required,same_origin,valid_name,UNIT_PRICE,mail_wake)
