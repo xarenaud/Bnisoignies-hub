@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from reminder17 import PlainMail
 
 RECIPIENTS=('xavier@cx-com.be',)
-SUBJECT='[TEST V4] Inter-BNI : bouton ENVOYER VOTRE SLIDE'
+SUBJECT='[TEST V5] Inter-BNI jeudi : slide, parking et règlement'
 
 def build_message(recipient,request_id,html,plan):
     parser=PlainMail()
@@ -37,12 +37,12 @@ def install(app,database,send):
         with database() as db:
             db.execute('CREATE TABLE IF NOT EXISTS invitation_tests (request_id TEXT PRIMARY KEY,status TEXT NOT NULL,created_at TEXT NOT NULL)')
         for i,recipient in enumerate(RECIPIENTS):
-            request_id='test-arrival-v4-20261124-xavier-'+str(i+1)
+            request_id='test-arrival-v5-payment-20261124-xavier-'+str(i+1)
             with database() as db:
                 db.execute('BEGIN IMMEDIATE')
                 existing=db.execute('SELECT status FROM invitation_tests WHERE request_id=?',(request_id,)).fetchone()
                 if existing:
-                    app.logger.warning('ARRIVAL_V4_TEST_RESULT %s',json.dumps(dict(recipient=recipient,status=existing['status'],existing=True)))
+                    app.logger.warning('ARRIVAL_V5_TEST_RESULT %s',json.dumps(dict(recipient=recipient,status=existing['status'],existing=True)))
                     continue
                 db.execute('INSERT INTO invitation_tests VALUES(?,?,?)',(request_id,'sending',datetime.now(ZoneInfo('Europe/Brussels')).isoformat()))
             status='accepted_by_smtp'
@@ -54,5 +54,5 @@ def install(app,database,send):
                 error_kind=type(error).__name__
             with database() as db:
                 db.execute('UPDATE invitation_tests SET status=? WHERE request_id=?',(status,request_id))
-            app.logger.warning('ARRIVAL_V4_TEST_RESULT %s',json.dumps(dict(recipient=recipient,status=status,error=error_kind)))
+            app.logger.warning('ARRIVAL_V5_TEST_RESULT %s',json.dumps(dict(recipient=recipient,status=status,error=error_kind)))
     Thread(target=run,daemon=True,name='arrival-two-review-tests').start()
