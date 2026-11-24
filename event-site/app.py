@@ -863,3 +863,6 @@ def organizer_participants():
 
 from arrival_review_v2 import install as install_arrival_review_v2
 install_arrival_review_v2(app, database, send_notification)
+
+from attendee_information24 import install as install_attendee_information24
+attendee_information24_service=install_attendee_information24(app,database,admin_required,send_notification)
