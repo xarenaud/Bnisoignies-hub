@@ -871,3 +871,18 @@ attendee_information24_service=install_attendee_information24(app,database,admin
 
 from manual_registration import install as install_manual_registration
 install_manual_registration(app,database,admin_required,same_origin,valid_name,UNIT_PRICE,mail_wake)
+
+@app.get('/api/admin/delivery-diagnostics')
+@admin_required
+def delivery_diagnostics():
+    ref=request.args.get('reference','')
+    if not re.fullmatch(r'BNI-[A-F0-9]{10}',ref):
+        return jsonify(error='Référence invalide.'),422
+    with database() as db:
+        row=db.execute('SELECT reference,payload,created_at FROM registrations WHERE reference=? AND is_test=0',(ref,)).fetchone()
+        if not row:return jsonify(error='Inscription introuvable.'),404
+        p=json.loads(row['payload']);email=p.get('email','').strip().lower()
+        confirmations=[dict(r) for r in db.execute('SELECT reference,kind,status,attempts,sent_at,last_error FROM email_deliveries WHERE reference=?',(ref,))]
+        information=[dict(r) for r in db.execute('SELECT mailing_id,status,claimed_at,sent_at,variant,error FROM attendee_information_recipients WHERE email=?',(email,))]
+    return jsonify(reference=ref,firstName=p.get('firstName',''),lastName=p.get('lastName',''),email=email,
+        registeredAt=row['created_at'],confirmations=confirmations,information=information)
