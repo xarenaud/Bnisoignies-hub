@@ -1,3 +1,5 @@
+const formExists=document.querySelector('#form');
+if(formExists){
 const UNIT_PRICE = 10;
 const form=document.querySelector('#form'),count=document.querySelector('#count'),guests=document.querySelector('#guests'),status=document.querySelector('#status');
 const invoiceRequested=document.querySelector('#invoiceRequested'),vatNumber=document.querySelector('#vatNumber');
@@ -44,3 +46,29 @@ form.addEventListener('submit',async e=>{
     status.scrollIntoView({block:'center',behavior:'smooth'});
   }catch(error){status.textContent=`L’inscription n’a pas pu être confirmée : ${error.message} Réessayez ou contactez event@bim-soignies.be.`;button.disabled=false;}
 });
+
+}
+(function(){
+ const closedMarkup="<div><div class=\"eyebrow\">INSCRIPTIONS CLÔTURÉES</div><h2>Les inscriptions en ligne sont clôturées.</h2><p>Pour toute demande concernant votre participation à la rencontre Inter-BNI du 26 novembre, merci d’écrire à <a href=\"mailto:event@bim-soignies.be\">event@bim-soignies.be</a>.</p><a class=\"button\" href=\"mailto:event@bim-soignies.be?subject=Inter-BNI%2026%20novembre%20-%20Demande\">Envoyer une demande par email</a></div>";
+ let timer;
+ function closeRegistration(){
+  const section=document.querySelector('#inscription');
+  if(section)section.innerHTML=closedMarkup;
+  document.querySelectorAll('a[href="#inscription"]').forEach(a=>{a.href='mailto:event@bim-soignies.be';a.textContent='Contacter l’organisation';});
+ }
+ async function sync(){
+  try{
+   const r=await fetch('/api/registration-status',{cache:'no-store'});
+   if(!r.ok)throw new Error('status unavailable');
+   const state=await r.json();
+   clearTimeout(timer);
+   if(state.closed){closeRegistration();return;}
+   timer=setTimeout(closeRegistration,Math.min(state.remainingMs+100,2147483647));
+  }catch(e){
+   const remaining=Date.parse('2026-11-24T12:00:00+01:00')-Date.now();
+   if(remaining<=0)closeRegistration();else timer=setTimeout(sync,Math.min(remaining+100,60000));
+  }
+ }
+ sync();
+ document.addEventListener('visibilitychange',()=>{if(!document.hidden)sync();});
+})();

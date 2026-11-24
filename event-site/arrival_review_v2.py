@@ -8,8 +8,8 @@ from threading import Thread
 from zoneinfo import ZoneInfo
 from reminder17 import PlainMail
 
-RECIPIENTS=('xavier@cx-com.be','amelie@century21masure.be')
-SUBJECT='[TEST V3] Inter-BNI : bouton ENVOYER VOTRE SLIDE'
+RECIPIENTS=('xavier@cx-com.be',)
+SUBJECT='[TEST V4] Inter-BNI : bouton ENVOYER VOTRE SLIDE'
 
 def build_message(recipient,request_id,html,plan):
     parser=PlainMail()
@@ -29,20 +29,20 @@ def build_message(recipient,request_id,html,plan):
 
 def install(app,database,send):
     def run():
-        # The explicit test request is dated November 23; never initiate it on a later day.
-        if datetime.now(ZoneInfo('Europe/Brussels')).date().isoformat()!='2026-11-23':
+        # The explicit test request is dated November 24; never initiate it on a later day.
+        if datetime.now(ZoneInfo('Europe/Brussels')).date().isoformat()!='2026-11-24':
             return
         html=(Path(app.static_folder)/'mailing-inter-bni-arrivee-v2.html').read_text()
         plan=(Path(app.static_folder)/'plan-acces-inter-bni.png').read_bytes()
         with database() as db:
             db.execute('CREATE TABLE IF NOT EXISTS invitation_tests (request_id TEXT PRIMARY KEY,status TEXT NOT NULL,created_at TEXT NOT NULL)')
         for i,recipient in enumerate(RECIPIENTS):
-            request_id='test-arrival-v3-button-20261123-review-'+str(i+1)
+            request_id='test-arrival-v4-20261124-xavier-'+str(i+1)
             with database() as db:
                 db.execute('BEGIN IMMEDIATE')
                 existing=db.execute('SELECT status FROM invitation_tests WHERE request_id=?',(request_id,)).fetchone()
                 if existing:
-                    app.logger.warning('ARRIVAL_V3_TEST_RESULT %s',json.dumps(dict(recipient=recipient,status=existing['status'],existing=True)))
+                    app.logger.warning('ARRIVAL_V4_TEST_RESULT %s',json.dumps(dict(recipient=recipient,status=existing['status'],existing=True)))
                     continue
                 db.execute('INSERT INTO invitation_tests VALUES(?,?,?)',(request_id,'sending',datetime.now(ZoneInfo('Europe/Brussels')).isoformat()))
             status='accepted_by_smtp'
@@ -54,5 +54,5 @@ def install(app,database,send):
                 error_kind=type(error).__name__
             with database() as db:
                 db.execute('UPDATE invitation_tests SET status=? WHERE request_id=?',(status,request_id))
-            app.logger.warning('ARRIVAL_V3_TEST_RESULT %s',json.dumps(dict(recipient=recipient,status=status,error=error_kind)))
+            app.logger.warning('ARRIVAL_V4_TEST_RESULT %s',json.dumps(dict(recipient=recipient,status=status,error=error_kind)))
     Thread(target=run,daemon=True,name='arrival-two-review-tests').start()

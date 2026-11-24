@@ -201,10 +201,34 @@ def too_large(error):
     return jsonify(error='Requête trop volumineuse.'), 413
 
 
+
+REGISTRATION_CLOSE_AT = datetime(2026,11,24,12,0,tzinfo=ZoneInfo('Europe/Brussels')).timestamp()
+REGISTRATION_CLOSED_MESSAGE = 'Les inscriptions en ligne sont clôturées. Pour toute demande, merci d’écrire à event@bim-soignies.be.'
+REGISTRATION_CLOSED_HTML = '<div><div class="eyebrow">INSCRIPTIONS CLÔTURÉES</div><h2>Les inscriptions en ligne sont clôturées.</h2><p>Pour toute demande concernant votre participation à la rencontre Inter-BNI du 26 novembre, merci d’écrire à <a href="mailto:event@bim-soignies.be">event@bim-soignies.be</a>.</p><a class="button" href="mailto:event@bim-soignies.be?subject=Inter-BNI%2026%20novembre%20-%20Demande">Envoyer une demande par email</a></div>'
+
+def registration_closed():
+    return time.time() >= REGISTRATION_CLOSE_AT
+
+@app.get('/api/registration-status')
+def registration_status():
+    response=jsonify(closed=registration_closed(),closesAt='2026-11-24T12:00:00+01:00',
+        remainingMs=max(0,int((REGISTRATION_CLOSE_AT-time.time())*1000)),
+        contact='event@bim-soignies.be',message=REGISTRATION_CLOSED_MESSAGE)
+    response.headers['Cache-Control']='no-store'
+    return response
+
 @app.get('/')
 @app.get('/event/')
 def index():
-    return send_from_directory(app.static_folder, 'index.html')
+    html=(Path(app.static_folder)/'index.html').read_text()
+    if registration_closed():
+        html=re.sub(r'(<section class="registration" id="inscription">).*?(</section>)',
+                    lambda m:m.group(1)+REGISTRATION_CLOSED_HTML+m.group(2),html,flags=re.S)
+        html=re.sub(r'<a class="button" href="#inscription">.*?</a>',
+                    '<a class="button" href="mailto:event@bim-soignies.be">Contacter l’organisation</a>',html)
+    else:
+        html=html.replace('<h2>Prenez place.</h2>','<h2>Prenez place.</h2><p><strong>Les inscriptions en ligne clôturent le mardi 24 novembre à 12h00.</strong></p>')
+    return Response(html,mimetype='text/html',headers={'Cache-Control':'no-store'})
 
 
 @app.get('/event')
@@ -329,6 +353,8 @@ def same_origin():
 @app.post('/register.php')
 @app.post('/event/register.php')
 def register():
+    if registration_closed():
+        return jsonify(error=REGISTRATION_CLOSED_MESSAGE,closed=True,contact='event@bim-soignies.be'),410
     if not same_origin():
         return jsonify(error='Origine non autorisée.'), 403
     data = request.get_json(silent=True)
@@ -377,6 +403,9 @@ def register():
         created_at = datetime.now(ZoneInfo('Europe/Brussels')).isoformat()
         payload['paymentAcceptedAt'] = created_at
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        if registration_closed():
+            db.rollback()
+            return jsonify(error=REGISTRATION_CLOSED_MESSAGE,closed=True,contact='event@bim-soignies.be'),410
         db.execute('INSERT INTO registrations(reference,fingerprint,payload,count,total,created_at,is_test) VALUES(?,?,?,?,?,?,?)',
                    (reference, fingerprint, encoded, count, count * UNIT_PRICE, created_at, int(is_test)))
         if not is_test or (data.get('notifyTest') is True and is_admin()):
