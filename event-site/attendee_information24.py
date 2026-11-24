@@ -12,7 +12,9 @@ from reminder17 import PlainMail
 ID='inter-bni-inscrits-20261124-1300'
 DUE=datetime(2026,11,24,13,0,tzinfo=ZoneInfo('Europe/Brussels')).timestamp()
 SUBJECT='Inter-BNI jeudi : votre slide, votre arrivée et les informations pratiques'
-def install(app,database,admin_required,send,start_worker=True):
+def install(app,database,admin_required,send,start_worker=True,mailing_id=ID,due_at=DUE,status_path='/api/admin/attendee-information-20261124'):
+    ID=mailing_id
+    DUE=due_at
     def audience(db):
         emails=set()
         for row in db.execute('SELECT payload FROM registrations WHERE is_test=0'):
@@ -53,10 +55,10 @@ def install(app,database,admin_required,send,start_worker=True):
             subject=job['subject'],counts=counts,total=sum(counts.values()),paymentRemindersPending=with_reminder,
             registrations=regs[0],participants=regs[1],audienceFinalized=bool(job['finalized']))
 
-    @app.get('/api/admin/attendee-information-20261124')
-    @admin_required
     def attendee_information_status():
         return jsonify(summary())
+    app.add_url_rule(status_path,endpoint='attendee_information_status_'+ID,
+        view_func=admin_required(attendee_information_status),methods=['GET'])
 
     def deliver():
         now=time.time()

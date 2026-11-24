@@ -886,3 +886,7 @@ def delivery_diagnostics():
         information=[dict(r) for r in db.execute('SELECT mailing_id,status,claimed_at,sent_at,variant,error FROM attendee_information_recipients WHERE email=?',(email,))]
     return jsonify(reference=ref,firstName=p.get('firstName',''),lastName=p.get('lastName',''),email=email,
         registeredAt=row['created_at'],confirmations=confirmations,information=information)
+
+attendee_information24_resend_service=install_attendee_information24(app,database,admin_required,send_notification,
+    mailing_id='inter-bni-inscrits-20261124-renvoi-1946',due_at=datetime(2026,11,24,19,46,tzinfo=ZoneInfo('Europe/Brussels')).timestamp(),
+    status_path='/api/admin/attendee-information-20261124-resend')
