@@ -74,6 +74,28 @@ def make_pdf(people):
         c.drawRightString(size[0]-32,24,'Page '+str(doc.page))
     doc.build(flow,onFirstPage=page,onLaterPages=page)
     return buf.getvalue()
+def payment_details(db,email):
+    """Only the booking payer is reminded; a guest never inherits the payer's debt."""
+    return [dict(r) for r in db.execute("""SELECT r.reference,r.total FROM registrations r
+        LEFT JOIN expense_notes n USING(reference)
+        WHERE r.is_test=0 AND r.total>0
+        AND lower(trim(COALESCE(json_extract(r.payload,'$.email'),'')))=?
+        AND trim(COALESCE(n.paid_at,''))='' ORDER BY r.id""",(email,))]
+def payment_html(html,details):
+    if not details:return html
+    amount=sum(float(r['total']) for r in details)
+    formatted=f'{amount:.2f}'.replace('.',',')
+    references=' / '.join(str(r['reference']) for r in details)
+    block=('<div style="margin:26px 0;padding:20px;background:#fff3f4;border-left:4px solid #cf2030;">'
+        '<h2 style="margin:0 0 10px;font-family:Georgia,serif;font-size:24px;color:#19212c;">Un petit point sur votre règlement.</h2>'
+        '<p>Sauf croisement avec votre paiement, le règlement de votre inscription reste à enregistrer. '
+        'Merci de verser <strong>'+formatted+' €</strong> sur le compte <strong>BNI SOIGNIES : BE16 1431 1380 7474</strong>, '
+        'en indiquant la communication <strong>'+escape(references)+'</strong>.</p>'
+        '<p style="margin-bottom:0;">Vous avez déjà payé, par virement ou sur place ? Merci ! '
+        'Ne tenez pas compte de ce rappel : notre suivi doit simplement vous rattraper.</p></div>')
+    anchor='<p>Au plaisir de vous retrouver,'
+    if anchor in html:return html.replace(anchor,block+anchor,1)
+    return html.replace('</body>',block+'</body>',1)
 def smtp_status(error):return 'failed' if isinstance(error,(smtplib.SMTPRecipientsRefused,smtplib.SMTPSenderRefused,smtplib.SMTPAuthenticationError)) else 'unknown'
 def build_message(email,html,pdf,subject,tag,rate_secret):
     token=hmac.new(rate_secret.encode(),('invitation-opt-out:'+email).encode(),hashlib.sha256).hexdigest()
@@ -94,6 +116,9 @@ def install(app,database,admin_required,same_origin,send,rate_secret,start_worke
         CREATE TABLE IF NOT EXISTS post_event_tests(request_id TEXT PRIMARY KEY,status TEXT,sent_at TEXT,error TEXT);
         CREATE TABLE IF NOT EXISTS membership_interests(request_id TEXT PRIMARY KEY,payload TEXT,created_at TEXT,status TEXT DEFAULT 'pending',claimed_at REAL,sent_at TEXT,error TEXT);
         CREATE TABLE IF NOT EXISTS membership_interest_rate(address_hash TEXT,window INTEGER,count INTEGER,PRIMARY KEY(address_hash,window));''')
+    with database() as db:
+        if 'variant' not in {r['name'] for r in db.execute('PRAGMA table_info(post_event_recipients)')}:
+            db.execute('ALTER TABLE post_event_recipients ADD COLUMN variant TEXT')
     def configured():
         with database() as db:return db.execute('SELECT * FROM post_event_mailings WHERE id=?',(ID,)).fetchone()
     def status():
@@ -104,8 +129,11 @@ def install(app,database,admin_required,same_origin,send,rate_secret,start_worke
             records=json.loads(job['records']) if job['records'] else directory(db,json.loads(job['companies']))
             emails={p['email'] for p in records if EMAIL.fullmatch(p['email'])}
             excluded={r[0] for r in db.execute('SELECT email FROM invitation_opt_outs')} if db.execute("SELECT 1 FROM sqlite_master WHERE name='invitation_opt_outs'").fetchone() else set()
+            pending_addresses=emails-excluded if not job['finalized'] else {r['email'] for r in db.execute("SELECT email FROM post_event_recipients WHERE mailing_id=? AND status='pending'",(ID,))}-excluded
+            payment_pending=sum(bool(payment_details(db,e)) for e in pending_addresses)
+            variants={r['variant']:r['n'] for r in db.execute("SELECT variant,COUNT(*) n FROM post_event_recipients WHERE mailing_id=? AND variant IS NOT NULL GROUP BY variant",(ID,))}
             return dict(id=ID,configured=True,enabled=bool(job['enabled']),state='scheduled' if job['enabled'] else 'awaiting_validation',scheduledFor=datetime.fromtimestamp(job['due'],ZoneInfo('Europe/Brussels')).isoformat(),
-                finalized=bool(job['finalized']),people=len(records),addresses=len(emails),eligibleAddresses=len(emails-excluded),excluded_unsubscribed=len(emails&excluded),counts=counts,
+                paymentRemindersPending=payment_pending,paymentCheckedAtSend=True,paymentVariants=variants,finalized=bool(job['finalized']),people=len(records),addresses=len(emails),eligibleAddresses=len(emails-excluded),excluded_unsubscribed=len(emails&excluded),counts=counts,
                 missingEmail=sum(not p['email'] for p in records),missingPhone=sum(not p['phone'] for p in records),missingCompany=sum(not p['company'] for p in records))
     @app.get('/api/admin/post-event-20261126')
     @admin_required
@@ -167,7 +195,7 @@ def install(app,database,admin_required,same_origin,send,rate_secret,start_worke
             if not job['finalized']:
                 records=directory(db,json.loads(job['companies']));pdf=make_pdf(records)
                 addresses=sorted({p['email'] for p in records if EMAIL.fullmatch(p['email'])})
-                db.executemany('INSERT OR IGNORE INTO post_event_recipients VALUES(?,?,?,NULL,NULL,NULL)',[(ID,e,'pending') for e in addresses])
+                db.executemany('INSERT OR IGNORE INTO post_event_recipients(mailing_id,email,status,claimed_at,sent_at,error) VALUES(?,?,?,NULL,NULL,NULL)',[(ID,e,'pending') for e in addresses])
                 db.execute('UPDATE post_event_mailings SET finalized=1,pdf=?,records=? WHERE id=?',(pdf,json.dumps(records,ensure_ascii=False),ID))
                 job=db.execute('SELECT * FROM post_event_mailings WHERE id=?',(ID,)).fetchone()
             db.execute("UPDATE post_event_recipients SET status='unknown',error='DeliveryInterrupted' WHERE mailing_id=? AND status='sending' AND claimed_at<?",(ID,current-300))
@@ -175,12 +203,14 @@ def install(app,database,admin_required,same_origin,send,rate_secret,start_worke
                 db.execute("UPDATE post_event_recipients SET status='excluded_unsubscribed',error=NULL WHERE mailing_id=? AND status='pending' AND email IN (SELECT email FROM invitation_opt_outs)",(ID,))
             row=db.execute("SELECT email FROM post_event_recipients WHERE mailing_id=? AND status='pending' ORDER BY email LIMIT 1",(ID,)).fetchone()
             if not row:return False
-            email=row['email'];db.execute("UPDATE post_event_recipients SET status='sending',claimed_at=? WHERE mailing_id=? AND email=?",(current,ID,email))
+            email=row['email'];details=payment_details(db,email);variant='payment_reminder' if details else 'information_only'
+            html=payment_html(job['html'],details)
+            db.execute("UPDATE post_event_recipients SET status='sending',claimed_at=?,variant=? WHERE mailing_id=? AND email=?",(current,variant,ID,email))
         result='accepted_by_smtp';error=None
-        try:send(build_message(email,job['html'],bytes(job['pdf']),SUBJECT,ID,rate_secret))
+        try:send(build_message(email,html,bytes(job['pdf']),SUBJECT,ID,rate_secret))
         except Exception as e:result=smtp_status(e);error=type(e).__name__
         with database() as db:db.execute('UPDATE post_event_recipients SET status=?,sent_at=?,error=? WHERE mailing_id=? AND email=?',(result,now_iso() if result=='accepted_by_smtp' else None,error,ID,email))
-        app.logger.info('POST_EVENT_DELIVERY %s',json.dumps(dict(id=ID,status=result,error=error)))
+        app.logger.info('POST_EVENT_DELIVERY %s',json.dumps(dict(id=ID,status=result,variant=variant,error=error)))
         return True
     @app.route('/api/public/membership-interest',methods=['POST','OPTIONS'])
     def membership_interest():
